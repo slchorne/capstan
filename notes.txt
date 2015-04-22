@@ -1,0 +1,101 @@
+Overview:
+
+The objective is to get valid 'Trust Anchors' into the
+    Grid DNS Properties -> DNSSec -> Trust Anchors
+
+RFC 5011 says that delegation ponts can publish their DNSKEYS in a way
+that allows them to roll their keys and subscribers can grab the keys
+and, presumably trust them.
+
+In this context the trust anchors are KSKs for non-authoritative zones.
+And thus used by the resolver component of the nameserver
+
+As per the spec it Should only manage anchors for known trust points and
+only for keys that have the SEP bit set
+
+-----------------------------------
+Design and implementation
+
+Capstan
+
+[ ] Command line options
+
+    [ ] --init  # initialise the zone, storage etc
+    [ ] -C  # show the config
+    [ ] -m  # set the Nameserver member
+            # and list all members if none set
+    [ ] -p  # passive, don't restart services
+    [ ] -t  # test all key states ( doesn't modify database )
+    [ ] -s  # re-sync all keys (quite the hammer)
+    [ ] -a  # add a domain
+    [ ] -r  # remove a domain
+    [ ] -l  # list domains
+    [ ] -k  # list all key states
+    [ ] --user   # add/configure the login account
+
+[ ] need a nameserver to resolve the KSKs 
+    [ ] set an EA on one of the members.
+
+[ ] grid or view level anchors
+
+[-] REST API ? 
+    NOT supported for trust anchors, need to use PAPI.
+
+[ ] state storage
+    [x] don't bother with the overhead of localDb
+    [-] Just store all the pending key info in a text file on disk
+        or use 'storable' ?
+
+    [ ] login info needs to be on the entiry,
+        [ ] use storable to keep the config for the useraccount
+            [ ] just store the HTTP header info
+
+    [ ] store the KEY info in 'RFC5011.local' zone
+        [ ] use TXT records and the REST api 
+        [ ] don't add any nameservers to the zone, disable it
+
+    [ ] auto-configure the zone on init, first run
+
+    [ ] only store the active keys on the grid,
+        put the rest of the config into the zone
+
+[ ] re-verify any of the records when reading from the file, so you don't
+risk someone replacing with data with bad data
+    [ ] don't store the keys or signatures
+    [ ] only store the required fields to re-do the lookup,
+        [ ] key id = 33878
+
+[ ] pull any new keys added to the grid from outside this process...
+
+[ ] we should validate the signing of the key, not just plain import it
+    [ ] need to walk the signing chain
+
+[ ] Platform the entity will run on is LINUX.
+
+[ ] CRON or Daemon
+    [ ] Periodic intervals for running the script is OK for T-Systems.
+    [ ] Run as a cron job at a fine grained period.
+        smaller than the window of the sleep timers
+
+        "Given that the minimum refresh time is one hour, such a fixed
+        interval should be one hour in order to conform to the RFC"
+
+[ ] pending keys get stored in the dataset until they are considered valid
+    [ ] just follow the rules of the statemachine
+
+[ ] can't use a pure-perl net::dns::sec - will be platform dependent. ?
+
+------------
+General notes:
+
+What they want is something like trustMan: ?
+
+https://www.dnssec-tools.org/wiki/index.php/Trustman 
+
+[x] do we care about pending keys ? Is this something that we can rely on
+from bind ? If the key appears, then disappears later, who cares, the
+entity will just add/remove it right ?
+    [x] or is this related to the 'bad key' injection problem ?
+    [x] yes, since you can't really trust the nameserver chain of query
+
+
