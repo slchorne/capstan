@@ -18,11 +18,14 @@ Design and implementation
 
 Capstan
 
+** [ ] add/remove domains to track
+    [ ] show in the config
+
 [ ] Command line options
 
-    [ ] --init  # initialise the zone, storage etc
+    [x] --init  # initialise the zone, storage etc
     [ ] -C  # show the config
-    [ ] -m  # set the Nameserver member
+    [x] -m  # set the Nameserver member
             # and list all members if none set
     [ ] -p  # passive, don't restart services
     [ ] -t  # test all key states ( doesn't modify database )
@@ -31,7 +34,7 @@ Capstan
     [ ] -r  # remove a domain
     [ ] -l  # list domains
     [ ] -k  # list all key states
-    [ ] --user   # add/configure the login account
+    [x] --user   # add/configure the login account
 
 [ ] need a nameserver to resolve the KSKs 
     [ ] set an EA on one of the members.

@@ -35,9 +35,15 @@ my $GRIDMASTER ;
 my $MEMBER ;
 my $USER ;
 my $PASS ;
+
 my $INIT ;
 my $FORCE ;
 my $SHOWCONFIG ;
+
+my $ADD;
+my $REMOVE;
+my $LIST;
+
 my $DEBUG ;
 my $NOOP ;
 
@@ -45,6 +51,7 @@ my $NOOP ;
 # set the rest in the $conf{} in initConfig()
 
 my $CONFFILE = "$BASE/$SCRIPTNAME.cfg";
+my $AUTOCOMM = "Auto added by RFC5011 Capstan";
 
 GetOptions (
 #     "V|version"    => sub { print "\n$ID\n$REV\n\n"; exit ; },
@@ -53,6 +60,11 @@ GetOptions (
     "m=s"       => \$MEMBER,
     "u|user=s"       => \$USER,
     "p=s"       => \$PASS,
+
+    "a=s"       => \$ADD,
+    "r=s"       => \$REMOVE,
+    "l"       => \$LIST,
+
     "C"       => \$SHOWCONFIG,
     "init"       => \$INIT,
     "f"       => \$FORCE,
@@ -60,14 +72,12 @@ GetOptions (
 );
 
 # 
-#     [ ] -m  # set the Nameserver member
-#             # and list all members if none set
-#     [ ] -p  # passive, don't restart services
-#     [ ] -t  # test all key states ( doesn't modify database )
-#     [ ] -s  # re-sync all keys (quite the hammer)
 #     [ ] -a  # add a domain
 #     [ ] -r  # remove a domain
 #     [ ] -l  # list domains
+#     [ ] -p  # passive, don't restart services
+#     [ ] -t  # test all key states ( doesn't modify database )
+#     [ ] -s  # re-sync all keys (quite the hammer)
 #     [ ] -k  # list all key states
 
 # never die, let the script trap all errors
@@ -96,6 +106,10 @@ setUser( $conf , $USER ) && exit if $USER ;
 setMaster( $conf , $GRIDMASTER ) && exit if $GRIDMASTER ;
 setMember( $conf , $MEMBER ) && exit if $MEMBER ;
 
+# do some grid level settings
+addDomain( $conf , $ADD ) && exit if $ADD;
+delDomain( $conf , $REMOVE ) && exit if $REMOVE;
+
 # now talk to the grid and get the systemwide configuration
 # to add to the config
 loadGridConf( $conf ) or exit;
@@ -106,6 +120,16 @@ if ( $SHOWCONFIG ) {
     exit ;
 }
 
+# strictly speaking these on-offs could happen before
+# calling loadGridConf(), but by doing here, and just checking the
+# config, we have slightly cleaner code
+if ( $LIST ) {
+    print join ( "\n" , @{ $conf->{domains} } ) ."\n";
+#     print Dumper ( $conf->{domains} );
+    exit ;
+}
+
+# now we have a config, we can do other operations
 
 #######################################
 
@@ -115,9 +139,13 @@ capstan : an implementation of RFC 5011 for Infoblox
 
 =head1 SYNOPSIS
 
-    ./capstan.pl
+  ./capstan.pl
 
  Options:
+
+  -a <domain>   Add a domain to track
+  -r <domain>   Remove a domain to track
+  -l            List tracked domains
 
   -help      Show a brief help message
   -C         Show the current configuration
@@ -125,8 +153,7 @@ capstan : an implementation of RFC 5011 for Infoblox
              requires --gm and --user
 
   -m <name>  Set the query nameserver to this member
-
-=head1 OPTIONS
+  --user     Set the username (and password) for login
 
 =over 8
 
@@ -145,8 +172,134 @@ Print a brief help message and exits.
 =cut
 
 ########################################
+#
+
+
+
+exit ;
+
+########################################
 # SUBS
 ########################################
+
+=head1 OPTIONS
+
+=head2 -a <domain>
+
+Add a domain to the tracker
+
+This will create a TXT record in the rfc5011.local zone for the namespace
+of the tracked domain
+
+=cut
+
+#
+# Add a domain to the tracker
+
+sub addDomain {
+    my ( $conf , $domain ) = @_ ;
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    # add the domain to be tracked
+    my $fqdn = join ( "." , $domain , $conf->{zone} );
+
+    # add the tracking zone
+    logit( "Adding tracking domain $domain");
+
+    my $zobj = Infoblox::DNS::Record::TXT->new(
+        name => $fqdn,
+        text => "domain:$domain",
+        comment => $AUTOCOMM,
+        extensible_attributes => { RFC5011 => 'domain' },
+    );
+            
+    $session->add( $zobj );
+    getSessionErrors( $session , "domain $fqdn" );
+
+    return 1 ;
+
+}
+
+=head2 -r <domain>
+
+Remove a domain to the tracker
+
+This will remove the matching TXT record in the rfc5011.local zone for
+the namespace of the tracked domain
+
+=cut
+
+sub delDomain {
+    my ( $conf , $domain ) = @_ ;
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    # remove the domain to be tracked
+    my $fqdn = join ( "." , $domain , $conf->{zone} );
+
+    # add the tracking zone
+    logit( "Deleting tracking domain $domain");
+
+    my ( $tobj ) = $session->get(
+        object => "Infoblox::DNS::Record::TXT",
+        name => $fqdn,
+#         extensible_attributes => { RFC5011 => { value => "domain" } }
+    );
+    getSessionErrors( $session , "find domain $fqdn" );
+
+    if ( $tobj ) {
+        $session->remove( $tobj );
+        getSessionErrors( $session , "delete domain $fqdn" );
+    }
+
+    return 1 ;
+
+}
+
+=head2 -l 
+
+List all the domains being tracked
+
+This will get all the TXT records in the rfc5011.local zone where the
+extensible_attribute 'RFC5011' == 'domain'
+
+=cut
+
+sub getDomains {
+    my ( $conf ) = @_ ;
+
+    # get all the domains and insert them into the config
+    # called from loadGridConf
+
+    my @domainlist ;
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    my ( @domains ) = $session->search(
+        object => "Infoblox::DNS::Record::TXT",
+        extensible_attributes => { RFC5011 => { value => "domain" } }
+    );
+    getSessionErrors( $session , "list domains" );
+
+#     print Dumper ( \@domains );
+
+    if ( @domains ) {
+        # scary use of map{} follows
+        @domainlist = map { 
+            ( my $s = $_->name() ) =~ s/$conf->{zone}// ; $s 
+            } @domains;
+    }
+
+    return ( \@domainlist );
+
+}
 
 #
 # set the grid ember for querying to,
@@ -324,7 +477,7 @@ sub initConfig {
     my $zobj = Infoblox::DNS::Zone->new(
         name => $conf->{zone},
         disable => 'true',
-        comment => "Auto added by RFC5011 Capstan",
+        comment => $AUTOCOMM,
     );
     $session->add( $zobj );
     getSessionErrors( $session , "zone $conf->{zone}" );
@@ -365,6 +518,8 @@ sub loadGridConf {
     if ( $zobj ) {
         $conf->{zoneOK} = 'true'
     }
+
+    $conf->{domains} = getDomains( $conf );
 
     return $conf ;
 
