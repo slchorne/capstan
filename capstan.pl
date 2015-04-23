@@ -26,6 +26,7 @@ use lib "$FindBin::Bin" ;
 use lib "$FindBin::Bin/lib" ;
 
 use Infoblox;
+use Net::DNS;
 
 # auto include help|?' => pod2usage(2)
 use Getopt::Long qw(:config auto_help);
@@ -37,7 +38,6 @@ my $USER ;
 my $PASS ;
 
 my $INIT ;
-my $FORCE ;
 my $SHOWCONFIG ;
 
 my $ADD;
@@ -46,6 +46,8 @@ my $LIST;
 
 my $DEBUG ;
 my $NOOP ;
+my $FORCE ;
+my $XRES ; # dummy test offline resolver
 
 # DO NOT SET ANY OTHER GLOBALS, here or anywhere near here
 # set the rest in the $conf{} in initConfig()
@@ -55,7 +57,6 @@ my $AUTOCOMM = "Auto added by RFC5011 Capstan";
 
 GetOptions (
 #     "V|version"    => sub { print "\n$ID\n$REV\n\n"; exit ; },
-    "d=s"       => \$DEBUG,
     "gm=s"       => \$GRIDMASTER,
     "m=s"       => \$MEMBER,
     "u|user=s"       => \$USER,
@@ -68,68 +69,17 @@ GetOptions (
     "C"       => \$SHOWCONFIG,
     "init"       => \$INIT,
     "f"       => \$FORCE,
+
+    "d=s"       => \$DEBUG,
     "n"       => \$NOOP,
+    "x=s"       => \$XRES,
 );
 
 # 
-#     [ ] -a  # add a domain
-#     [ ] -r  # remove a domain
-#     [ ] -l  # list domains
+#     [ ] -k  # list all key states
 #     [ ] -p  # passive, don't restart services
 #     [ ] -t  # test all key states ( doesn't modify database )
 #     [ ] -s  # re-sync all keys (quite the hammer)
-#     [ ] -k  # list all key states
-
-# never die, let the script trap all errors
-
-# first try and initialise
-if ( $INIT ) {
-    if ( $GRIDMASTER and $USER ) {
-        initConfig( $GRIDMASTER , $USER )
-    }
-    else {
-        pod2usage(2);
-    }
-    exit ;
-}
-
-# [ ] check the commandline options
-# unless ( @ARGV ) {
-#     die "Usage: $NAME <args>\n";
-# }
-
-# load up the local config, the loaders kick errors
-my $conf = loadLocalConfig() or exit;
-
-# do some local config settings
-setUser( $conf , $USER ) && exit if $USER ;
-setMaster( $conf , $GRIDMASTER ) && exit if $GRIDMASTER ;
-setMember( $conf , $MEMBER ) && exit if $MEMBER ;
-
-# do some grid level settings
-addDomain( $conf , $ADD ) && exit if $ADD;
-delDomain( $conf , $REMOVE ) && exit if $REMOVE;
-
-# now talk to the grid and get the systemwide configuration
-# to add to the config
-loadGridConf( $conf ) or exit;
-
-if ( $SHOWCONFIG ) {
-    delete $conf->{login}{password};
-    print Dumper ( $conf ) ;
-    exit ;
-}
-
-# strictly speaking these on-offs could happen before
-# calling loadGridConf(), but by doing here, and just checking the
-# config, we have slightly cleaner code
-if ( $LIST ) {
-    print join ( "\n" , @{ $conf->{domains} } ) ."\n";
-#     print Dumper ( $conf->{domains} );
-    exit ;
-}
-
-# now we have a config, we can do other operations
 
 #######################################
 
@@ -155,14 +105,6 @@ capstan : an implementation of RFC 5011 for Infoblox
   -m <name>  Set the query nameserver to this member
   --user     Set the username (and password) for login
 
-=over 8
-
-=item B<-help>
-
-Print a brief help message and exits.
-
-=back
-
 =head1 DESCRIPTION
 
 =for author to fill in:
@@ -172,9 +114,51 @@ Print a brief help message and exits.
 =cut
 
 ########################################
-#
+# never die, let the script trap all errors
 
+# first try and initialise
+if ( $INIT ) {
+    if ( $GRIDMASTER and $USER ) {
+        initConfig( $GRIDMASTER , $USER )
+    }
+    else {
+        pod2usage(2);
+    }
+    exit ;
+}
 
+# load up the local config, the loaders kick errors
+my $conf = loadLocalConfig() or exit;
+
+# do some local config settings and exit early
+setUser( $conf , $USER ) && exit if $USER ;
+setMaster( $conf , $GRIDMASTER ) && exit if $GRIDMASTER ;
+setMember( $conf , $MEMBER ) && exit if $MEMBER ;
+
+# do some grid level settings and exit early
+addDomain( $conf , $ADD ) && exit if $ADD;
+delDomain( $conf , $REMOVE ) && exit if $REMOVE;
+
+# now talk to the grid and get the systemwide configuration
+# to add to the config
+loadGridConf( $conf ) or exit;
+
+showConfig( $conf ) && exit if $SHOWCONFIG ; 
+
+# now we have a config, we can do other operations
+
+# strictly speaking these on-offs could happen before
+# calling loadGridConf(), but by doing them here, and just checking the
+# config, we have slightly cleaner code
+if ( $LIST ) {
+    print join ( "\n" , @{ $conf->{domains} } ) ."\n";
+#     print Dumper ( $conf->{domains} );
+    exit ;
+}
+
+# Step one, query all the Keys out in the real workd
+
+checkAllKeys( $conf );
 
 exit ;
 
@@ -209,14 +193,14 @@ sub addDomain {
     # add the tracking zone
     logit( "Adding tracking domain $domain");
 
-    my $zobj = Infoblox::DNS::Record::TXT->new(
+    my $tobj = Infoblox::DNS::Record::TXT->new(
         name => $fqdn,
         text => "domain:$domain",
         comment => $AUTOCOMM,
         extensible_attributes => { RFC5011 => 'domain' },
     );
             
-    $session->add( $zobj );
+    $session->add( $tobj );
     getSessionErrors( $session , "domain $fqdn" );
 
     return 1 ;
@@ -284,6 +268,7 @@ sub getDomains {
 
     my ( @domains ) = $session->search(
         object => "Infoblox::DNS::Record::TXT",
+        zone => $conf->{zone},
         extensible_attributes => { RFC5011 => { value => "domain" } }
     );
     getSessionErrors( $session , "list domains" );
@@ -293,11 +278,78 @@ sub getDomains {
     if ( @domains ) {
         # scary use of map{} follows
         @domainlist = map { 
-            ( my $s = $_->name() ) =~ s/$conf->{zone}// ; $s 
+            ( my $s = $_->name() ) =~ s/\.$conf->{zone}// ; $s 
             } @domains;
     }
 
     return ( \@domainlist );
+
+}
+
+#
+# get all the keys from the grid
+#
+# ALL TXT records tagged as 'key'
+#
+
+sub getKeys {
+    my ( $conf ) = @_ ;
+
+    # get all the domains and insert them into the config
+    # called from loadGridConf
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    my ( @keys ) = $session->search(
+        object => "Infoblox::DNS::Record::TXT",
+        zone => $conf->{zone},
+        extensible_attributes => { RFC5011 => { value => "key" } }
+    );
+    getSessionErrors( $session , "list domains" );
+
+    my $keyData = {};
+
+    # now walk each of them and insert them into the conf
+    foreach my $kobj ( @keys ) {
+        my ( $id , $domain ) = $kobj->name() 
+            =~ /(\d+).key.(\S+).$conf->{zone}/;
+
+        $keyData->{$domain}{$id}{ongrid} = 'true';
+    }
+
+    return $keyData ;
+
+}
+
+#
+# add a key to the zone file for tracking
+#
+sub addKey {
+    my ( $conf , $domain , $id , $info ) = @_ ;
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    # add the domain to be tracked
+    my $fqdn = join ( "." , $id , 'key' , $domain , $conf->{zone} );
+
+    # add the tracking zone
+    logit( "Adding key $id for $domain");
+
+    my $tobj = Infoblox::DNS::Record::TXT->new(
+        name => $fqdn,
+        text => "domain:$domain id:$id",
+        comment => $AUTOCOMM,
+        extensible_attributes => { RFC5011 => 'key' },
+    );
+            
+    $session->add( $tobj );
+    getSessionErrors( $session , "key $fqdn" );
+
+    return 1 ;
 
 }
 
@@ -425,6 +477,16 @@ sub setUser {
     return 1 ;
 }
 
+#
+# wrapper to hide some junk
+#
+sub showConfig {
+    my ( $conf ) = @_ ;
+    delete $conf->{login}{password};
+    delete $conf->{session};
+    print Dumper ( $conf ) ;
+}
+
 sub initConfig {
     my ( $server , $user ) = @_ ;
 
@@ -520,6 +582,7 @@ sub loadGridConf {
     }
 
     $conf->{domains} = getDomains( $conf );
+    $conf->{keys} = getKeys( $conf );
 
     return $conf ;
 
@@ -551,13 +614,92 @@ sub saveLocalConfig {
 }
 
 #
+# DNS queries and resolver stuff handling
+#
+
+sub checkAllKeys {
+    my ( $conf ) = @_ ;
+    my $resolver = getResolver( $conf );
+
+    foreach my $domain ( @{ $conf->{domains} } ) {    
+        logit( "Query keys for $domain" );
+
+        my $reply = $resolver->send($domain , "DNSKEY", "IN");
+        # $query is a a "Net::DNS::Packet" object
+        if ( ! $reply ) {
+            # we got an error
+            logerror( "DNSKEY Search : $domain : " . $resolver->errorstring );
+        }
+
+        foreach my $rr ($reply->answer) {
+
+            # we only care about 'SEP' keys
+            if ( $rr->sep ) {
+                my $id = $rr->keytag() ;
+
+                # see if we already know about it..
+                unless ( $conf->{keys}{$domain}{$id} ) {
+                    addKey( $conf , $domain , $id , "" );
+                    $conf->{keys}{$domain}{$id}{ongrid} = 'new'
+                }
+
+                # and add the dnsinfo to the config
+                $conf->{keys}{$domain}{$id}{rr} = {
+                    flags => $rr->flags(),
+                    sep => $rr->sep(),
+#                     key => $rr->key(),
+                    key => substr($rr->key(), -8, 8),
+                    private => $rr->privatekeyname(),
+                    tag => $rr->keytag(),
+                }
+
+            }
+
+#             print Dumper ({
+#             });
+
+        }
+
+    }
+
+    showConfig( $conf );
+
+}
+
+sub getResolver {
+    my ( $conf ) = @_ ;
+
+    # uses fancy ref caching..
+    return $conf->{resolver} if $conf->{resolver} ;
+
+    # and local hacks
+    my $ns = $XRES ? $XRES : $conf->{nameserver};
+
+    logit ( "Sending DNS queries to $ns");
+
+    my $res = Net::DNS::Resolver->new;
+    $res->nameservers( $ns );
+    $res->tcp_timeout(10);
+    $res->udp_timeout(5);
+
+    return ( $res ) ;
+}
+
+
+#
 # session handling
 #
 sub startSession {
     my ( $conf ) = @_ ;
+
+    # fancy ref caching
+    return $conf->{session} if $conf->{session};
+
     my $login = $conf->{login};
 
     my $master = $login->{master};
+
+    logit ( "Connecting to GM $login->{master}" );
 
     # create the session handler
     my $session = Infoblox::Session->new(
@@ -578,6 +720,9 @@ sub startSession {
     if ( getSessionErrors( $session ) ) {
         $session = undef ;
     }
+
+    # also save it for caching
+    $conf->{session} = $session ;
 
     return $session ;
             
