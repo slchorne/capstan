@@ -635,6 +635,7 @@ sub listDomains {
 # wrapper to hide some junk
 #
 sub showConfig {
+
     my ( $conf ) = @_ ;
 
     # move aside some values to hide them from display
@@ -757,6 +758,8 @@ sub loadGridConf {
     $conf->{domains} = getDomains( $conf );
     $conf->{keys} = getKeys( $conf );
 
+    print Dumper ( (caller(0))[3] ) if $DEBUG > 1 ;
+    showConfig( $conf ) if $DEBUG > 1 ;
 
     return $conf ;
 
@@ -852,9 +855,6 @@ sub checkAllKeys {
     }
 
     print Dumper ( (caller(0))[3] , $conf->{keys} ) if $DEBUG ;
-
-#     print Dumper ( '
-#     showConfig( $conf ) if $DEBUG ;
 
 }
 
