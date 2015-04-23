@@ -159,6 +159,12 @@ listKeys( $conf ) && exit if $LISTKEYS ;
 
 checkAllKeys( $conf );
 
+# step 2 add any new keys
+# [ ] this follows the statemachine,
+#     we're just testing for now
+
+publishKey( $conf , 'com' , '30909' );
+
 exit ;
 
 ########################################
@@ -353,6 +359,57 @@ sub addKey {
 }
 
 #
+# add a key to the grid properties
+# 
+sub publishKey {
+    my ( $conf , $domain , $id , $info ) = @_ ;
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    logit( "Trusting key $id for $domain");
+
+    my ( $gobj ) = $session->get(
+        object => "Infoblox::Grid::DNS",
+    );
+    getSessionErrors( $session ); 
+
+    my $gridkeys = $gobj->dnssec_trusted_keys();
+
+#     print Dumper ( 'Currnet keys' , $gridkeys ) if $DEBUG ;
+
+    # get the config for this key
+    my $rdata = $conf->{keys}{$domain}{$id}{rr};
+
+    print Dumper ( 'rdata' , $rdata ) if $DEBUG ;
+
+    print "rd [ $rdata->{key} ]\n";
+
+    # create and add the key object
+    # [ ] hope that it isn't already there...
+
+    my $keydef = Infoblox::DNS::DnssecTrustedKey->new(
+           fqdn => $domain,
+           algorithm => getAlgorithm( $rdata->{algorithm} ),
+#            algorithm => $rdata->{algorithm},
+           key => $rdata->{key},
+    );
+    getApiErrors() unless $keydef ;
+
+    push @{ $gridkeys } , $keydef ;
+
+    $gobj->dnssec_trusted_keys( $gridkeys );
+#     $gobj->dnssec_trusted_keys( [ $keydef ] );
+# 
+    $session->modify( $gobj );
+    getSessionErrors( $session ); 
+
+    return 1 ;
+
+}
+
+#
 # set the grid ember for querying to,
 # OR list All members if it wasn't found
 # also remove the EA from any other member
@@ -503,9 +560,18 @@ sub listDomains {
 #
 sub showConfig {
     my ( $conf ) = @_ ;
+
+    # move aside some values to hide them from display
+    # but don't delete them...
+    my $p = $conf->{login}{password};
+    my $s = $conf->{session};
     delete $conf->{login}{password};
     delete $conf->{session};
     print Dumper ( $conf ) ;
+
+    $conf->{login}{password} = $p;
+    $conf->{session} = $s;
+
 }
 
 sub initConfig {
@@ -668,8 +734,10 @@ sub checkAllKeys {
                 $conf->{keys}{$domain}{$id}{rr} = {
                     flags => $rr->flags(),
                     sep => $rr->sep(),
-#                     key => $rr->key(),
-                    key => substr($rr->key(), -8, 8),
+                    # we need the WHOLE key for the trust anchor
+                    key => $rr->key(),
+                    algorithm => $rr->algorithm(),
+#                     key => substr($rr->key(), -8, 8),
                     private => $rr->privatekeyname(),
                     tag => $rr->keytag(),
                 }
@@ -683,7 +751,7 @@ sub checkAllKeys {
 
     }
 
-    showConfig( $conf );
+    showConfig( $conf ) if $DEBUG ;
 
 }
 
@@ -765,6 +833,16 @@ sub getSessionErrors {
     return 0;
 }
 
+sub getApiErrors {
+    my ( $session , $info ) = @_ ;
+
+    my $result = Infoblox::status_code() ;
+    my $response = Infoblox::status_detail() ;
+    logerror( "$response ($result) : $info " );
+    return 1;
+
+}
+
 #
 # helper function
 #
@@ -825,6 +903,29 @@ sub logit {
 
     # ALL mesages come here, where we add a timestamp
     print localtime() . " : $level : $message\n";
+}
+
+#
+# lookup algorithm, coz we don't support all numbers, grr
+#
+
+sub getAlgorithm {
+    my ( $num ) = @_;
+
+    my $alook = {
+        1=>"RSAMD5",
+        3=>"DSA",
+        5=>"RSASHA1",
+        6=>"NSEC3DSA",
+        7=>"NSEC3RSASHA1",
+        8=>"RSASHA256",
+        10=>"RSASHA512",
+#         12=>"GOST R 34.10-200",
+#         13=>"ECDSA/SHA-256",
+#         14=>"ECDSA/SHA-384",
+    };
+
+    return ( $alook->{$num} );
 }
 
 
