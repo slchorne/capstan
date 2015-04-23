@@ -96,6 +96,8 @@ capstan : an implementation of RFC 5011 for Infoblox
 
   ./capstan.pl
 
+  ./capstan.pl --init --gm my.grid.master --user admin
+
  Options:
 
   -a <domain>   Add a domain to track
@@ -169,7 +171,7 @@ checkAllKeys( $conf );
 
 # [ ] 
 discoKey( $conf , 'com' , '30909' ) ;
-exit ;
+
 #
 publishKey( $conf , 'com' , '30909' );
 
@@ -321,7 +323,7 @@ sub getKeys {
         zone => $conf->{zone},
         extensible_attributes => { RFC5011 => { value => "key" } }
     );
-    getSessionErrors( $session , "list domains" );
+    getSessionErrors( $session , "list keys" );
 
     my $keyData = {};
 
@@ -330,7 +332,11 @@ sub getKeys {
         my ( $id , $domain ) = $kobj->name() 
             =~ /(\d+).key.(\S+).$conf->{zone}/;
 
-        $keyData->{$domain}{$id}{ongrid} = 'true';
+#         $keyData->{$domain}{$id}{ongrid} = 'true';
+        $keyData->{$domain}{$id} = {
+            ongrid => 'true',
+            query => 'not found',
+        };
     }
 
     return $keyData ;
@@ -379,6 +385,15 @@ sub publishKey {
 
     logit( "Trusting key $id for $domain");
 
+    # get the config for this key
+    my $rdata = $conf->{keys}{$domain}{$id}{rr};
+
+    unless ( $rdata ) {
+        logerror( "rdata for key $id was not found" );
+        return ;
+    }
+
+    # We're ok, continue to configure the grid
     my ( $gobj ) = $session->get(
         object => "Infoblox::Grid::DNS",
     );
@@ -386,18 +401,7 @@ sub publishKey {
 
     my $gridkeys = $gobj->dnssec_trusted_keys();
 
-#     print Dumper ( 'Currnet keys' , $gridkeys ) if $DEBUG ;
-
-    # get the config for this key
-    my $rdata = $conf->{keys}{$domain}{$id}{rr};
-
-    print Dumper ( 'rdata' , $rdata ) if $DEBUG ;
-
-    print "rd [ $rdata->{key} ]\n";
-
-    my $digest = md5_base64( $rdata->{key} );
-
-    print " d [ $digest ]\n";
+    print Dumper ( (caller(0))[3] , $rdata ) if $DEBUG ;
 
     # create and add the key object
     # [ ] hope that it isn't already there...
@@ -412,6 +416,7 @@ sub publishKey {
 
     push @{ $gridkeys } , $keydef ;
 
+    # update and modify
     $gobj->dnssec_trusted_keys( $gridkeys );
 
     $session->modify( $gobj );
@@ -434,17 +439,22 @@ sub discoKey {
 
     logit( "UnTrusting key $id for $domain");
 
+    # get the config for this key we want to remove
+    my $rdata = $conf->{keys}{$domain}{$id}{rr};
+    unless ( $rdata ) {
+        logerror( "rdata for key $id was not found" );
+        return ;
+    }
+
+    # We're ok, continue to configure the grid
     my ( $gobj ) = $session->get(
         object => "Infoblox::Grid::DNS",
     );
     getSessionErrors( $session ); 
 
-    # get the config for this key we want to remove
-    my $rdata = $conf->{keys}{$domain}{$id}{rr};
-
     my $digest = $rdata->{digest};
 
-    print Dumper ( 'rdata' , $rdata ) if $DEBUG ;
+    print Dumper ( (caller(0))[3] , $rdata ) if $DEBUG ;
 
     # need to walk all the keys on the grid, but these have no good UID,
     # and a regex will fail on the keystring.
@@ -580,7 +590,7 @@ sub setUser {
 
     unless ( $password ) {
         # just prompt for a username
-        print "enter password for user $user: ";
+        print "\nEnter password for user $user: ";
         ReadMode 2;
         chomp($password=<STDIN>);
         ReadMode 0;
@@ -613,7 +623,10 @@ sub listKeys {
 #
 sub listDomains {
     my ( $conf ) = @_ ;
-    print join ( "\n" , @{ $conf->{domains} } ) ."\n";
+
+    if ( $conf->{domains} ) {
+        print join ( "\n" , @{ $conf->{domains} } ) ."\n";
+    }
 
     return 1
 }
@@ -704,6 +717,8 @@ sub initConfig {
 sub loadGridConf {
     my ( $conf ) = @_ ;
 
+    logit( "Loading grid config..." );
+
     # we're passed the config from disk with the login info
     # so now append to it...
 
@@ -730,18 +745,26 @@ sub loadGridConf {
         name => $conf->{zone},
     );
     getSessionErrors( $session , "zone $conf->{zone}" );
-    if ( $zobj ) {
-        $conf->{zoneOK} = 'true'
+
+    unless ( $zobj ) {
+        logerror ( "There are problems with the config, exiting" );
+        return undef ;
     }
 
+    $conf->{zoneOK} = 'true' ;
+
+    # now get records from that zone
     $conf->{domains} = getDomains( $conf );
     $conf->{keys} = getKeys( $conf );
+
 
     return $conf ;
 
 }
 
 sub loadLocalConfig {
+
+    logit( "Loading local config..." );
 
     my $data = undef ;
     # read from disk, this could DIE, so put it in an eval instead
@@ -782,11 +805,14 @@ sub checkAllKeys {
     foreach my $domain ( @{ $conf->{domains} } ) {    
         logit( "Query keys for $domain" );
 
+        # [ ] do we continue on DNS errors, or just give up ?
+
         my $reply = $resolver->send($domain , "DNSKEY", "IN");
         # $query is a a "Net::DNS::Packet" object
         if ( ! $reply ) {
             # we got an error
             logerror( "DNSKEY Search : $domain : " . $resolver->errorstring );
+            next ;
         }
 
         foreach my $rr ($reply->answer) {
@@ -802,6 +828,7 @@ sub checkAllKeys {
                 }
 
                 # and add the dnsinfo to the config
+                $conf->{keys}{$domain}{$id}{query} = "ok";
                 $conf->{keys}{$domain}{$id}{rr} = {
                     flags => $rr->flags(),
                     sep => $rr->sep(),
@@ -824,7 +851,10 @@ sub checkAllKeys {
 
     }
 
-    showConfig( $conf ) if $DEBUG ;
+    print Dumper ( (caller(0))[3] , $conf->{keys} ) if $DEBUG ;
+
+#     print Dumper ( '
+#     showConfig( $conf ) if $DEBUG ;
 
 }
 
