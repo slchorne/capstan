@@ -193,15 +193,18 @@ sub setMember {
     }
 
     # now make any necessary changes
-    if ( @cleanmembers ) {
-        foreach my $cobj ( @cleanmembers ) {
-            setAttributes( $cobj , { RFC5011 => '' } );
-            $session->modify( $cobj );
-            getSessionErrors( $session ); 
-        }
-    }
 
+    # if we found a new member to enable, disable all the others
     if ( $newobj ) {
+        if ( @cleanmembers ) {
+            foreach my $cobj ( @cleanmembers ) {
+                setAttributes( $cobj , { RFC5011 => '' } );
+                $session->modify( $cobj );
+                getSessionErrors( $session ); 
+            }
+        }
+
+        # then (re) set this member
         setAttributes( $newobj , { RFC5011 => 'nameserver' } );
         $session->modify( $newobj );
         getSessionErrors( $session ); 
@@ -317,6 +320,12 @@ sub loadGridConf {
     # use that to bootstrap the config.
     # And load some settings from the grid
 
+    # create a blank config
+    my $conf = {
+        login => $login,
+        nameserver => "",
+    };
+
     my $session = startSession( $login );  
     return unless $session ;
 
@@ -325,14 +334,11 @@ sub loadGridConf {
         object => "Infoblox::Grid::Member",
         extensible_attributes => { RFC5011 => { value => "nameserver" } }
     );
-
     getSessionErrors( $session );
 
-    # insert it into the main config
-    my $conf = {
-        login => $login
-    };
+    $conf->{nameserver} = $dnsmember->ipv4addr() if $dnsmember;
 
+    # insert it into the main config
     return $conf ;
 
 }
