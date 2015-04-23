@@ -41,6 +41,9 @@ my $SHOWCONFIG ;
 my $DEBUG ;
 my $NOOP ;
 
+# DO NOT SET ANY OTHER GLOBALS, here or anywhere near here
+# set the rest in the $conf{} in initConfig()
+
 my $CONFFILE = "$BASE/$SCRIPTNAME.cfg";
 
 GetOptions (
@@ -86,15 +89,16 @@ if ( $INIT ) {
 # }
 
 # load up the local config, the loaders kick errors
-my $loginconf = loadLocalConfig() or exit;
+my $conf = loadLocalConfig() or exit;
 
 # do some local config settings
-setUser( $loginconf , $USER ) && exit if $USER ;
-setMaster( $loginconf , $GRIDMASTER ) && exit if $GRIDMASTER ;
-setMember( $loginconf , $MEMBER ) && exit if $MEMBER ;
+setUser( $conf , $USER ) && exit if $USER ;
+setMaster( $conf , $GRIDMASTER ) && exit if $GRIDMASTER ;
+setMember( $conf , $MEMBER ) && exit if $MEMBER ;
 
 # now talk to the grid and get the systemwide configuration
-my $conf = loadGridConf( $loginconf ) or exit;
+# to add to the config
+loadGridConf( $conf ) or exit;
 
 if ( $SHOWCONFIG ) {
     delete $conf->{login}{password};
@@ -228,7 +232,7 @@ sub setMaster {
     logit( "Changing Gridmaster to : $gm" );
 
     # re/set and save the GM to the local config
-    $conf->{master} = $gm ;
+    $conf->{login}{master} = $gm ;
 
     saveLocalConfig( $conf );
 
@@ -241,10 +245,11 @@ sub setMaster {
 #
 sub setUser {
     my ( $conf , $user ) = @_ ;
+    my $login = $conf->{login};
 
     logit( "Changing login user to : $user" );
 
-    $conf->{username} = $user ;
+    $login->{username} = $user ;
 
     # hack to bypass the prompt
     my $password = $PASS || undef ;
@@ -258,7 +263,7 @@ sub setUser {
         print "\n";
     }
 
-    $conf->{password} = $password;
+    $login->{password} = $password;
 
     saveLocalConfig( $conf );
 
@@ -280,17 +285,21 @@ sub initConfig {
 
     # create a blank config
     my $conf = {
-        master => $server,
-        timeout => 5,
-        username => "",
-        password => "",
+        login => {
+            master => $server,
+            timeout => 5,
+            username => "",
+            password => "",
+        }
     };
 
     # get a password for the username
     # ( or we can't talk to the grid and configure it);
     # and let setUser write the config to disk
 
-    setUser( $conf, $user );
+    setUser( $conf , $user );
+
+    logit( "Saving loginfo to disk");
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
@@ -314,19 +323,12 @@ sub initConfig {
 }
 
 sub loadGridConf {
-    my ( $login ) = @_ ;
+    my ( $conf ) = @_ ;
 
-    # we're passed the local login config from disk
-    # use that to bootstrap the config.
-    # And load some settings from the grid
+    # we're passed the config from disk with the login info
+    # so now append to it...
 
-    # create a blank config
-    my $conf = {
-        login => $login,
-        nameserver => "",
-    };
-
-    my $session = startSession( $login );  
+    my $session = startSession( $conf );  
     return unless $session ;
 
     # search for all grid member objects
@@ -336,9 +338,12 @@ sub loadGridConf {
     );
     getSessionErrors( $session );
 
-    $conf->{nameserver} = $dnsmember->ipv4addr() if $dnsmember;
-
     # insert it into the main config
+    if ( $dnsmember ) {
+        $conf->{nameserver} = $dnsmember->ipv4addr();
+        $conf->{member} = $dnsmember->name();
+    }
+
     return $conf ;
 
 }
@@ -372,7 +377,8 @@ sub saveLocalConfig {
 # session handling
 #
 sub startSession {
-    my ( $login ) = @_ ;
+    my ( $conf ) = @_ ;
+    my $login = $conf->{login};
 
     my $master = $login->{master};
 
