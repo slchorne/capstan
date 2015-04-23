@@ -91,9 +91,7 @@ my $loginconf = loadLocalConfig() or exit;
 # do some local config settings
 setUser( $loginconf , $USER ) && exit if $USER ;
 setMaster( $loginconf , $GRIDMASTER ) && exit if $GRIDMASTER ;
-setNameServer( $loginconf , $MEMBER ) && exit if $MEMBER ;
-
-print "Got to here\n";
+setMember( $loginconf , $MEMBER ) && exit if $MEMBER ;
 
 # now talk to the grid and get the systemwide configuration
 my $conf = loadGridConf( $loginconf ) or exit;
@@ -151,7 +149,7 @@ Print a brief help message and exits.
 # OR list All members if it wasn't found
 # also remove the EA from any other member
 #
-sub setNameServer {
+sub setMember {
     my ( $conf , $member ) = @_ ;
 
     my $session = startSession( $conf );  
@@ -184,6 +182,7 @@ sub setNameServer {
 
         # OR if this is the new member
         if ( $name eq $member ) {
+            logit( "setting $member as query nameserver" );
             $newobj = $mobj ;
         }
 
@@ -193,11 +192,19 @@ sub setNameServer {
         $memberinfo .= "  $name : $ip : $state\n";
     }
 
-    print "ok\n";
-
     # now make any necessary changes
-    if ( $newobj ) {
+    if ( @cleanmembers ) {
+        foreach my $cobj ( @cleanmembers ) {
+            setAttributes( $cobj , { RFC5011 => '' } );
+            $session->modify( $cobj );
+            getSessionErrors( $session ); 
+        }
+    }
 
+    if ( $newobj ) {
+        setAttributes( $newobj , { RFC5011 => 'nameserver' } );
+        $session->modify( $newobj );
+        getSessionErrors( $session ); 
     }
     else {
         logerror( "no member found by name : $member" );
@@ -207,44 +214,6 @@ sub setNameServer {
     # must return TRUE
     return 1;
 
-}
-
-#
-# helper function
-#
-# objects may not have the EA method or any EAs
-#
-sub getAttributes {
-    my ( $obj , $ea ) = @_ ;
-    return undef unless $obj->extensible_attributes();
-
-    return $obj->extensible_attributes()->{$ea}
-
-}
-
-#
-# modifying ES requires special care
-#
-# we're passed a hashref of EA values
-#
-sub setAttributes {
-    my ( $obj , $attrs ) = @_ ;
-
-    # easy if there aren't any
-    unless ( $obj->extensible_attributes() ) {
-        $obj->extensible_attributes( $attrs );
-        return;
-    }
-
-    # otherwise walk the ones we were given and add them to the hash
-    my $exts = $obj->extensible_attributes();
-
-    foreach my $ea ( keys %{ $attrs } ) {
-        $exts->{$ea} = $attrs->{$ea};
-    }
-
-    # and update the object
-    $obj->extensible_attributes( $exts );
 }
 
 #
@@ -281,7 +250,7 @@ sub setUser {
         # just prompt for a username
         print "enter password for user $user: ";
         ReadMode 2;
-        chomp(my $password=<STDIN>);
+        chomp($password=<STDIN>);
         ReadMode 0;
         print "\n";
     }
@@ -290,8 +259,9 @@ sub setUser {
 
     saveLocalConfig( $conf );
 
-    # return the config, just in case we needed it
-    return ;
+    # return the config, just in case we needed it ?
+    # must return OK
+    return 1 ;
 }
 
 sub initConfig {
@@ -402,9 +372,10 @@ sub startSession {
 
     # create the session handler
     my $session = Infoblox::Session->new(
-         "master" => $login->{master},
-         "username" => $login->{username},
-         "password" => $login->{password},
+         master => $login->{master},
+         username => $login->{username},
+         password => $login->{password},
+#          password => 'xinfoblox',
 #          "timeout" => $login->{timeout},
          "connection_timeout" => $login->{timeout} || 5,
     );
@@ -412,6 +383,7 @@ sub startSession {
     unless ( $session ) {
         # may need some LWP debug here
         logerror( "Couldn't connect to $login->{master}" );
+        logerror( "check username, password or connection" );
     }
 
     if ( getSessionErrors( $session ) ) {
@@ -436,6 +408,50 @@ sub getSessionErrors {
         return 1;
     }
     return 0;
+}
+
+#
+# helper function
+#
+# objects may not have the EA method or any EAs
+#
+sub getAttributes {
+    my ( $obj , $ea ) = @_ ;
+    return undef unless $obj->extensible_attributes();
+
+    return $obj->extensible_attributes()->{$ea}
+
+}
+
+#
+# modifying EAs requires special care
+#
+# we're passed a hashref of EA values
+#
+sub setAttributes {
+    my ( $obj , $attrs ) = @_ ;
+
+    # easy if there aren't any
+    unless ( $obj->extensible_attributes() ) {
+        $obj->extensible_attributes( $attrs );
+        return;
+    }
+
+    # otherwise walk the ones we were given and add them to the hash
+    my $exts = $obj->extensible_attributes();
+
+    foreach my $ea ( keys %{ $attrs } ) {
+        # if you pass a blank, clear it out
+        if ( $attrs->{$ea} ) {
+            $exts->{$ea} = $attrs->{$ea};
+        }
+        else {
+            delete $exts->{$ea};
+        }
+    }
+
+    # and update the object
+    $obj->extensible_attributes( $exts );
 }
 
 #
