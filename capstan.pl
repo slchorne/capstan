@@ -11,7 +11,7 @@ use Data::Dumper;
 $Data::Dumper::Sortkeys = 1 ;
 
 # SSL/LWP checks?
-# $ENV{PERL_LWP_SSL_VERIFY_HOSTNAME}=0;
+$ENV{PERL_LWP_SSL_VERIFY_HOSTNAME}=0;
 
 #### work out where i am
 # these variables can then be used to find config files
@@ -25,13 +25,17 @@ use lib "lib" ;
 use lib "$FindBin::Bin" ;
 use lib "$FindBin::Bin/lib" ;
 
+use Infoblox;
+
 # auto include help|?' => pod2usage(2)
 use Getopt::Long qw(:config auto_help);
 use Pod::Usage;
 
 my $GRIDMASTER ;
 my $USER ;
+my $PASS ;
 my $INIT ;
+my $FORCE ;
 my $SHOWCONFIG ;
 my $DEBUG ;
 my $NOOP ;
@@ -43,8 +47,10 @@ GetOptions (
     "d=s"       => \$DEBUG,
     "gm=s"       => \$GRIDMASTER,
     "u|user=s"       => \$USER,
+    "p=s"       => \$PASS,
     "C"       => \$SHOWCONFIG,
     "init"       => \$INIT,
+    "f"       => \$FORCE,
     "n"       => \$NOOP,
 );
 
@@ -58,8 +64,6 @@ GetOptions (
 #     [ ] -r  # remove a domain
 #     [ ] -l  # list domains
 #     [ ] -k  # list all key states
-#     [ ] --user   # add/configure the login account
-#     [ ] --gm   # add/configure the login account
 
 # never die, let the script trap all errors
 
@@ -156,17 +160,23 @@ sub setUser {
 
     $conf->{username} = $user ;
 
-    # just prompt for a username
-    print "enter password for user $user: ";
-    ReadMode 2;
-    chomp(my $password=<STDIN>);
-    ReadMode 0;
-    print "\n";
+    # hack to bypass the prompt
+    my $password = $PASS || undef ;
+
+    unless ( $password ) {
+        # just prompt for a username
+        print "enter password for user $user: ";
+        ReadMode 2;
+        chomp(my $password=<STDIN>);
+        ReadMode 0;
+        print "\n";
+    }
 
     $conf->{password} = $password;
 
     saveLocalConfig( $conf );
 
+    # return the config, just in case we needed it
     return ;
 }
 
@@ -176,7 +186,7 @@ sub initConfig {
     logit ( "Initialising the config" );
 
     # check we haven't been here before
-    if ( -f $CONFFILE ) {
+    if ( -f $CONFFILE && ! $FORCE ) {
         logerror( "There is already a running setup, exiting" );
         return ;
     }
@@ -184,6 +194,7 @@ sub initConfig {
     # create a blank config
     my $conf = {
         master => $server,
+        timeout => 5,
         username => "",
         password => "",
     };
@@ -191,24 +202,49 @@ sub initConfig {
     # get a password for the username
     # ( or we can't talk to the grid and configure it);
     # and let setUser write the config to disk
+
     setUser( $conf, $user );
 
-    # now try and connect to the grid and make some other settings
+#     # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
 
     return ;
 
+}
+
+sub sessionErrors {
+    my ( $session ) = @_ ;
+    if ( $session && $session->status_code() ) {
+        my $result = $session->status_code();
+        my $response = $session->status_detail();
+        logerror( "$response ($result)" );
+        return 1;
+    }
+    return 0;
 }
 
 sub loadGridConf {
     my ( $login ) = @_ ;
 
     # we're passed the local login config from disk
+    # use that to bootstrap the config.
+    # And load some settings from the grid
+
+    my $session = startSession( $login );  
+    return unless $session ;
+
+    # search for all grid member objects
+    my ( $dnsmember ) = $session->get(
+        object => "Infoblox::Grid::Member",
+        extensible_attributes => { RFC5011 => { value => "nameserver" } }
+    );
+
+    sessionErrors( $session );
+
     # insert it into the main config
     my $conf = {
         login => $login
     };
-
-    # load some settings from the grid
 
     return $conf ;
 
@@ -237,6 +273,36 @@ sub loadLocalConfig {
 sub saveLocalConfig {
     my ( $conf ) = @_ ;
     lock_store $conf , $CONFFILE;
+}
+
+#
+# session handling
+#
+sub startSession {
+    my ( $login ) = @_ ;
+
+    my $master = $login->{master};
+
+    # create the session handler
+    my $session = Infoblox::Session->new(
+         "master" => $login->{master},
+         "username" => $login->{username},
+         "password" => $login->{password},
+#          "timeout" => $login->{timeout},
+         "connection_timeout" => $login->{timeout} || 5,
+    );
+
+    unless ( $session ) {
+        # may need some LWP debug here
+        logerror( "Couldn't connect to $login->{master}" );
+    }
+
+    if ( sessionErrors( $session ) ) {
+        $session = undef ;
+    }
+
+    return $session ;
+            
 }
 
 #
