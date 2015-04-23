@@ -6,6 +6,7 @@ use strict ;
 use feature qw(say switch);
 use Storable qw( retrieve lock_store );
 use Term::ReadKey;
+use Digest::MD5 qw(md5_base64);
 
 use Data::Dumper;
 $Data::Dumper::Sortkeys = 1 ;
@@ -163,7 +164,12 @@ checkAllKeys( $conf );
 # [ ] this follows the statemachine,
 #     we're just testing for now
 
+# [ ] 
+discoKey( $conf , 'com' , '30909' ) ;
+exit ;
+#
 publishKey( $conf , 'com' , '30909' );
+
 
 exit ;
 
@@ -386,6 +392,10 @@ sub publishKey {
 
     print "rd [ $rdata->{key} ]\n";
 
+    my $digest = md5_base64( $rdata->{key} );
+
+    print " d [ $digest ]\n";
+
     # create and add the key object
     # [ ] hope that it isn't already there...
 
@@ -400,8 +410,58 @@ sub publishKey {
     push @{ $gridkeys } , $keydef ;
 
     $gobj->dnssec_trusted_keys( $gridkeys );
-#     $gobj->dnssec_trusted_keys( [ $keydef ] );
+
+    $session->modify( $gobj );
+    getSessionErrors( $session ); 
+
+    return 1 ;
+
+}
+
+#
+# remove a key to the grid properties
+#   disco(ontinue)Key
 # 
+sub discoKey {
+    my ( $conf , $domain , $id , $info ) = @_ ;
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    logit( "UnTrusting key $id for $domain");
+
+    my ( $gobj ) = $session->get(
+        object => "Infoblox::Grid::DNS",
+    );
+    getSessionErrors( $session ); 
+
+    # get the config for this key we want to remove
+    my $rdata = $conf->{keys}{$domain}{$id}{rr};
+
+    my $digest = $rdata->{digest};
+
+    print Dumper ( 'rdata' , $rdata ) if $DEBUG ;
+
+    # need to walk all the keys on the grid, but these have no good UID,
+    # and a regex will fail on the keystring.
+    # so md5_base64() the key, and compare it to the digest in the config
+
+    my $newkeys = [];
+
+    foreach my $gkey ( @{ $gobj->dnssec_trusted_keys() } ) {
+#         my $gsum = md5_base64( $gkey->{key} );
+
+        if ( md5_base64( $gkey->{key} ) eq $rdata->{digest} ) {
+            logit( "Removing $domain $id $rdata->{digest}" );
+        }
+        else {
+            push @{ $newkeys } , $gkey ;
+        }
+    }
+
+    $gobj->dnssec_trusted_keys( $newkeys );
+
     $session->modify( $gobj );
     getSessionErrors( $session ); 
 
@@ -736,6 +796,8 @@ sub checkAllKeys {
                     sep => $rr->sep(),
                     # we need the WHOLE key for the trust anchor
                     key => $rr->key(),
+                    # and keep an MD5 sum for repairs and regex
+                    digest => md5_base64 ( $rr->key() ),
                     algorithm => $rr->algorithm(),
 #                     key => substr($rr->key(), -8, 8),
                     private => $rr->privatekeyname(),
