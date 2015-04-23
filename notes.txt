@@ -24,7 +24,7 @@ Capstan
 [ ] Command line options
 
     [x] --init  # initialise the zone, storage etc
-    [ ] -C  # show the config
+    [x] -C  # show the config
     [x] -m  # set the Nameserver member
             # and list all members if none set
     [ ] -p  # passive, don't restart services
@@ -33,41 +33,41 @@ Capstan
     [x] -a  # add a domain
     [x] -r  # remove a domain
     [x] -l  # list domains
-    [ ] -k  # list all key states
+    [x] -k  # list all key states
     [x] --user   # add/configure the login account
 
-[ ] need a nameserver to resolve the KSKs 
-    [ ] set an EA on one of the members.
+[x] need a nameserver to resolve the KSKs 
+    [x] set an EA on one of the members.
 
 [ ] grid or view level anchors
 
 [-] REST API ? 
     NOT supported for trust anchors, need to use PAPI.
 
-[ ] state storage
+[x] state storage
     [x] don't bother with the overhead of localDb
     [-] Just store all the pending key info in a text file on disk
         or use 'storable' ?
 
-    [ ] login info needs to be on the entiry,
-        [ ] use storable to keep the config for the useraccount
-            [ ] just store the HTTP header info
+    [x] login info needs to be on the entiry,
+        [x] use storable to keep the config for the useraccount
+            [-] just store the HTTP header info
 
-    [ ] store the KEY info in 'RFC5011.local' zone
-        [ ] use TXT records and the REST api 
-        [ ] don't add any nameservers to the zone, disable it
-        [ ] ALWAYS in the default view
+    [x] store the KEY info in 'RFC5011.local' zone
+        [x] use TXT records and the REST api 
+        [x] don't add any nameservers to the zone, disable it
+        [x] ALWAYS in the default view
 
-    [ ] auto-configure the zone on init, first run
+    [x] auto-configure the zone on init, first run
 
     [ ] only store the active keys on the grid,
         put the rest of the config into the zone
 
-[ ] re-verify any of the records when reading from the file, so you don't
+[x] re-verify any of the records when reading from the file, so you don't
 risk someone replacing with data with bad data
-    [ ] don't store the keys or signatures
-    [ ] only store the required fields to re-do the lookup,
-        [ ] key id = 33878
+    [x] don't store the keys or signatures
+    [x] only store the required fields to re-do the lookup,
+        [x] key id = 33878
 
 [ ] pull any new keys added to the grid from outside this process...
 
@@ -101,5 +101,27 @@ from bind ? If the key appears, then disappears later, who cares, the
 entity will just add/remove it right ?
     [x] or is this related to the 'bad key' injection problem ?
     [x] yes, since you can't really trust the nameserver chain of query
+
+Validation works because you have to SIGN the WHOLE RRset.
+
+So if you have a set or keys A,B
+and if someone adds a new key, C they can sign the whole NEW set [a,b,c]
+and produce a valid signature.
+
+But the other signature for the same rrset, won't contain C, it will only
+contain [a,b] and the signature will fail when we try and validate
+[a,b,c].
+
+And the new key can never be signed by the old key, because they don't
+have the private key to sign it
+
+the problem, thus, is that the INVALID key, may be the GOOD key, (because
+the RRSet is invalid) so you have to invalidate ALL keys.
+
+BUT - what do you do then ? Stop trusting the zone ?
+
+BUT - what if the old sig is missing from the rrset ?
+BUT - what if the rrset just has whole new keys and sigs ?
+
 
 
