@@ -30,9 +30,9 @@ Capstan
     [ ] -p  # passive, don't restart services
     [ ] -t  # test all key states ( doesn't modify database )
     [ ] -s  # re-sync all keys (quite the hammer)
-    [ ] -a  # add a domain
-    [ ] -r  # remove a domain
-    [ ] -l  # list domains
+    [x] -a  # add a domain
+    [x] -r  # remove a domain
+    [x] -l  # list domains
     [ ] -k  # list all key states
     [x] --user   # add/configure the login account
 
@@ -87,7 +87,7 @@ risk someone replacing with data with bad data
 [ ] pending keys get stored in the dataset until they are considered valid
     [ ] just follow the rules of the statemachine
 
-[ ] can't use a pure-perl net::dns::sec - will be platform dependent. ?
+[-] can't use a pure-perl net::dns::sec - will be platform dependent. ?
 
 ------------
 General notes:

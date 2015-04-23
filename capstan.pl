@@ -42,7 +42,8 @@ my $SHOWCONFIG ;
 
 my $ADD;
 my $REMOVE;
-my $LIST;
+my $LISTDOMAINS;
+my $LISTKEYS;
 
 my $DEBUG ;
 my $NOOP ;
@@ -64,7 +65,8 @@ GetOptions (
 
     "a=s"       => \$ADD,
     "r=s"       => \$REMOVE,
-    "l"       => \$LIST,
+    "l"       => \$LISTDOMAINS,
+    "k"       => \$LISTKEYS,
 
     "C"       => \$SHOWCONFIG,
     "init"       => \$INIT,
@@ -150,11 +152,8 @@ showConfig( $conf ) && exit if $SHOWCONFIG ;
 # strictly speaking these on-offs could happen before
 # calling loadGridConf(), but by doing them here, and just checking the
 # config, we have slightly cleaner code
-if ( $LIST ) {
-    print join ( "\n" , @{ $conf->{domains} } ) ."\n";
-#     print Dumper ( $conf->{domains} );
-    exit ;
-}
+listDomains( $conf ) && exit if $LISTDOMAINS ;
+listKeys( $conf ) && exit if $LISTKEYS ;
 
 # Step one, query all the Keys out in the real workd
 
@@ -475,6 +474,28 @@ sub setUser {
     # return the config, just in case we needed it ?
     # must return OK
     return 1 ;
+}
+
+#
+# format key data from the conf
+#
+sub listKeys {
+    foreach my $domain ( sort keys %{ $conf->{keys} } ) {
+        foreach my $id ( sort keys %{ $conf->{keys}{$domain} } ) {
+            print " $domain : $id\n";
+        }
+    }
+    return 1;
+}
+
+#
+# format domain data from the conf
+#
+sub listDomains {
+    my ( $conf ) = @_ ;
+    print join ( "\n" , @{ $conf->{domains} } ) ."\n";
+
+    return 1
 }
 
 #
