@@ -30,7 +30,7 @@ use Infoblox;
 use Net::DNS;
 
 # auto include help|?' => pod2usage(2)
-use Getopt::Long qw(:config auto_help);
+use Getopt::Long qw(:config no_ignore_case auto_help);
 use Pod::Usage;
 
 my $GRIDMASTER ;
@@ -40,6 +40,7 @@ my $PASS ;
 
 my $INIT ;
 my $SHOWCONFIG ;
+my $SHOWLOCALCONFIG ;
 
 my $ADD;
 my $REMOVE;
@@ -70,12 +71,13 @@ GetOptions (
     "k"       => \$LISTKEYS,
 
     "C"       => \$SHOWCONFIG,
+    "c"       => \$SHOWLOCALCONFIG,
     "init"       => \$INIT,
     "f"       => \$FORCE,
 
     "d=s"       => \$DEBUG,
     "n"       => \$NOOP,
-    "x=s"       => \$XRES,
+    "x=s"       => \$XRES, # local test hack
 );
 
 # 
@@ -102,6 +104,7 @@ capstan : an implementation of RFC 5011 for Infoblox
 
   -help      Show a brief help message
   -C         Show the current configuration
+  -c         Show just the local configuration
   --init     Initialise the system (only runs once)
              requires --gm and --user
 
@@ -625,10 +628,13 @@ sub showConfig {
     # but don't delete them...
     my $p = $conf->{login}{password};
     my $s = $conf->{session};
-    delete $conf->{login}{password};
+
+    $conf->{login}{password} = $conf->{login}{password} ? 'xxxxxxx' : undef ;
+#     delete $conf->{login}{password};
     delete $conf->{session};
     print Dumper ( $conf ) ;
 
+    # then put the saved values back
     $conf->{login}{password} = $p;
     $conf->{session} = $s;
 
@@ -750,6 +756,11 @@ sub loadLocalConfig {
     }
 
     print Dumper ( $data ) if $DEBUG > 1 ;
+
+    if ( $SHOWLOCALCONFIG ) {
+        showConfig( $data );
+        exit;
+    }
 
     return $data ;
 
