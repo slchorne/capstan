@@ -53,6 +53,7 @@ Capstan
     [ ] store the KEY info in 'RFC5011.local' zone
         [ ] use TXT records and the REST api 
         [ ] don't add any nameservers to the zone, disable it
+        [ ] ALWAYS in the default view
 
     [ ] auto-configure the zone on init, first run
 

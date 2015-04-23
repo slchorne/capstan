@@ -290,7 +290,8 @@ sub initConfig {
             timeout => 5,
             username => "",
             password => "",
-        }
+        },
+        zone => "rfc5011.local",
     };
 
     # get a password for the username
@@ -318,6 +319,16 @@ sub initConfig {
 
     }
 
+    # add the tracking zone
+    logit( "Adding tracking zone $conf->{zone}");
+    my $zobj = Infoblox::DNS::Zone->new(
+        name => $conf->{zone},
+        disable => 'true',
+        comment => "Auto added by RFC5011 Capstan",
+    );
+    $session->add( $zobj );
+    getSessionErrors( $session , "zone $conf->{zone}" );
+
     return ;
 
 }
@@ -336,12 +347,23 @@ sub loadGridConf {
         object => "Infoblox::Grid::Member",
         extensible_attributes => { RFC5011 => { value => "nameserver" } }
     );
-    getSessionErrors( $session );
+    getSessionErrors( $session , "RFC5011 member" );
 
     # insert it into the main config
     if ( $dnsmember ) {
         $conf->{nameserver} = $dnsmember->ipv4addr();
         $conf->{member} = $dnsmember->name();
+    }
+
+    # find/check the zone we put all the records in...
+    $conf->{zoneOK} = 'false' ;
+    my ( $zobj ) = $session->get(
+        object => "Infoblox::DNS::Zone",
+        name => $conf->{zone},
+    );
+    getSessionErrors( $session , "zone $conf->{zone}" );
+    if ( $zobj ) {
+        $conf->{zoneOK} = 'true'
     }
 
     return $conf ;
@@ -411,12 +433,12 @@ sub startSession {
 # return TRUE if there WAS an error
 #
 sub getSessionErrors {
-    my ( $session ) = @_ ;
+    my ( $session , $info ) = @_ ;
 
     if ( $session && $session->status_code() ) {
         my $result = $session->status_code();
         my $response = $session->status_detail();
-        logerror( "$response ($result)" );
+        logerror( "$response ($result) : $info " );
         return 1;
     }
     return 0;
