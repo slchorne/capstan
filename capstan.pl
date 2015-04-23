@@ -32,6 +32,7 @@ use Getopt::Long qw(:config auto_help);
 use Pod::Usage;
 
 my $GRIDMASTER ;
+my $MEMBER ;
 my $USER ;
 my $PASS ;
 my $INIT ;
@@ -46,6 +47,7 @@ GetOptions (
 #     "V|version"    => sub { print "\n$ID\n$REV\n\n"; exit ; },
     "d=s"       => \$DEBUG,
     "gm=s"       => \$GRIDMASTER,
+    "m=s"       => \$MEMBER,
     "u|user=s"       => \$USER,
     "p=s"       => \$PASS,
     "C"       => \$SHOWCONFIG,
@@ -88,7 +90,10 @@ my $loginconf = loadLocalConfig() or exit;
 
 # do some local config settings
 setUser( $loginconf , $USER ) && exit if $USER ;
-setServer( $loginconf , $GRIDMASTER ) && exit if $GRIDMASTER ;
+setMaster( $loginconf , $GRIDMASTER ) && exit if $GRIDMASTER ;
+setNameServer( $loginconf , $MEMBER ) && exit if $MEMBER ;
+
+print "Got to here\n";
 
 # now talk to the grid and get the systemwide configuration
 my $conf = loadGridConf( $loginconf ) or exit;
@@ -117,6 +122,8 @@ capstan : an implementation of RFC 5011 for Infoblox
   --init     Initialise the system (only runs once)
              requires --gm and --user
 
+  -m <name>  Set the query nameserver to this member
+
 =head1 OPTIONS
 
 =over 8
@@ -139,7 +146,111 @@ Print a brief help message and exits.
 # SUBS
 ########################################
 
-sub setServer {
+#
+# set the grid ember for querying to,
+# OR list All members if it wasn't found
+# also remove the EA from any other member
+#
+sub setNameServer {
+    my ( $conf , $member ) = @_ ;
+
+    my $session = startSession( $conf );  
+    return 1 unless $session ;
+
+    # search for all grid member objects
+    my @members = $session->get(
+        object => "Infoblox::Grid::Member",
+#         name =>
+#         extensible_attributes => { RFC5011 => { value => "nameserver" } }
+    );
+
+    my $memberinfo ;
+    my @cleanmembers ;
+    my $newobj ;
+    foreach my $mobj ( @members ) {
+        my $name = $mobj->name();
+        my $ip = $mobj->ipv4addr();
+        my $state = "";
+
+        # see if this member is the query member
+        # and track it for cleanup
+        $state = getAttributes( $mobj , 'RFC5011' );
+        push @cleanmembers , $mobj  if $state ;
+#         if ( $mobj->extensible_attributes()
+#             && $mobj->extensible_attributes()->{RFC5011}
+# #             ) {
+#                 $state = $mobj->extensible_attributes()->{RFC5011} ;
+#         }
+
+        # OR if this is the new member
+        if ( $name eq $member ) {
+            $newobj = $mobj ;
+        }
+
+        # we could have overlaps here if you re-set the current
+        # nameserver member, but that will be OK
+
+        $memberinfo .= "  $name : $ip : $state\n";
+    }
+
+    print "ok\n";
+
+    # now make any necessary changes
+    if ( $newobj ) {
+
+    }
+    else {
+        logerror( "no member found by name : $member" );
+        print "$memberinfo";
+    }
+
+    # must return TRUE
+    return 1;
+
+}
+
+#
+# helper function
+#
+# objects may not have the EA method or any EAs
+#
+sub getAttributes {
+    my ( $obj , $ea ) = @_ ;
+    return undef unless $obj->extensible_attributes();
+
+    return $obj->extensible_attributes()->{$ea}
+
+}
+
+#
+# modifying ES requires special care
+#
+# we're passed a hashref of EA values
+#
+sub setAttributes {
+    my ( $obj , $attrs ) = @_ ;
+
+    # easy if there aren't any
+    unless ( $obj->extensible_attributes() ) {
+        $obj->extensible_attributes( $attrs );
+        return;
+    }
+
+    # otherwise walk the ones we were given and add them to the hash
+    my $exts = $obj->extensible_attributes();
+
+    foreach my $ea ( keys %{ $attrs } ) {
+        $exts->{$ea} = $attrs->{$ea};
+    }
+
+    # and update the object
+    $obj->extensible_attributes( $exts );
+}
+
+#
+# set the GM in the local config
+#
+sub setMaster {
     my ( $conf , $gm ) = @_ ;
 
     logit( "Changing Gridmaster to : $gm" );
@@ -149,10 +260,13 @@ sub setServer {
 
     saveLocalConfig( $conf );
 
-    return ;
+    # must return OK
+    return 1;
 }
 
+#
 # get a password, save and write the config
+#
 sub setUser {
     my ( $conf , $user ) = @_ ;
 
@@ -205,22 +319,25 @@ sub initConfig {
 
     setUser( $conf, $user );
 
-#     # now try and connect to the grid and make some other settings
+    # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
+    return unless $session ;
+
+    # Create some EAs
+    foreach my $ea ( qw( RFC5011
+        ) ) {
+        logit( "Adding EA : $ea" );
+        my ( $dobj ) = Infoblox::Grid::ExtensibleAttributeDef->new(
+            name => $ea,
+            type => "string",
+        );
+        $session->add( $dobj );
+        getSessionErrors( $session ); 
+
+    }
 
     return ;
 
-}
-
-sub sessionErrors {
-    my ( $session ) = @_ ;
-    if ( $session && $session->status_code() ) {
-        my $result = $session->status_code();
-        my $response = $session->status_detail();
-        logerror( "$response ($result)" );
-        return 1;
-    }
-    return 0;
 }
 
 sub loadGridConf {
@@ -239,7 +356,7 @@ sub loadGridConf {
         extensible_attributes => { RFC5011 => { value => "nameserver" } }
     );
 
-    sessionErrors( $session );
+    getSessionErrors( $session );
 
     # insert it into the main config
     my $conf = {
@@ -297,12 +414,28 @@ sub startSession {
         logerror( "Couldn't connect to $login->{master}" );
     }
 
-    if ( sessionErrors( $session ) ) {
+    if ( getSessionErrors( $session ) ) {
         $session = undef ;
     }
 
     return $session ;
             
+}
+
+#
+# general handler to log and show session errors
+# return TRUE if there WAS an error
+#
+sub getSessionErrors {
+    my ( $session ) = @_ ;
+
+    if ( $session && $session->status_code() ) {
+        my $result = $session->status_code();
+        my $response = $session->status_detail();
+        logerror( "$response ($result)" );
+        return 1;
+    }
+    return 0;
 }
 
 #
