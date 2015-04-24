@@ -1,3 +1,5 @@
+
+
 Overview:
 
 The objective is to get valid 'Trust Anchors' into the
@@ -14,12 +16,44 @@ As per the spec it Should only manage anchors for known trust points and
 only for keys that have the SEP bit set
 
 -----------------------------------
+Ulf:
+
+[ ] need to manually add the initial key
+    user types it in, we check it with a DNS query 
+    [ ] -a needs a key as well
+        [ ] read from an input file, use ALL keys from the
+            file for that zone
+
+[ ] validation
+    Must bootstrap from a known trust anchor
+    check the DNSKEYset with the RRSIG
+    [ ] must start with a key, 
+    [ ] and always validate from known KEYS only.
+
+        [ ] use the same format as our 'export trust anchor'
+            format, which is 'dig + multiline' rolled back
+            into a single line
+
+    [ ] never add a key that wasn't checked by a trusted key
+    [ ] must also validate revoked keys with the same keyset
+[ ] hold-down - 30 days ?
+    yes, but checking more frequently helps with the revocation
+    process
+    [ ] if we run every hour, we can ignore TTLS
+[ ] revoke , YES, not neg anchors
+[ ] system changes - what if invalid ?
+    only follow managed trust points
+
+-----------------------------------
 Design and implementation
 
 Capstan
 
-** [ ] add/remove domains to track
-    [ ] show in the config
+[ ] locking
+    [ ] need to lock the script in case someone tries an admin function
+        while it is processing from a cron job ?
+
+    [ ] or are there no risks of collisions, anyway ?
 
 [ ] Command line options
 
@@ -31,6 +65,7 @@ Capstan
     [ ] -t  # test all key states ( doesn't modify database )
     [ ] -s  # re-sync all keys (quite the hammer)
     [x] -a  # add a domain
+    [ ] -v  # view ( add domain to just this view )
     [x] -r  # remove a domain
     [x] -l  # list domains
     [x] -k  # list all key states
@@ -39,7 +74,8 @@ Capstan
 [x] need a nameserver to resolve the KSKs 
     [x] set an EA on one of the members.
 
-[ ] grid or view level anchors
+[ ] grid or MEMBER level anchors, not views
+    [ ] how to set the location ?
 
 [-] REST API ? 
     NOT supported for trust anchors, need to use PAPI.

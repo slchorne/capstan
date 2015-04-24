@@ -58,29 +58,33 @@ my $XRES ; # dummy test offline resolver
 my $CONFFILE = "$BASE/$SCRIPTNAME.cfg";
 my $AUTOCOMM = "Auto added by RFC5011 Capstan";
 
-GetOptions (
+my $ores = GetOptions (
 #     "V|version"    => sub { print "\n$ID\n$REV\n\n"; exit ; },
-    "gm=s"       => \$GRIDMASTER,
+    "gm=s"      => \$GRIDMASTER,
     "m=s"       => \$MEMBER,
-    "u|user=s"       => \$USER,
+    "u|user=s"  => \$USER,
     "p=s"       => \$PASS,
 
-    "a=s"       => \$ADD,
-    "r=s"       => \$REMOVE,
+    "a=s"     => \$ADD,
+    "r=s"     => \$REMOVE,
     "l"       => \$LISTDOMAINS,
     "k"       => \$LISTKEYS,
 
     "C"       => \$SHOWCONFIG,
     "c"       => \$SHOWLOCALCONFIG,
-    "init"       => \$INIT,
+    "init"    => \$INIT,
     "f"       => \$FORCE,
 
-    "d=s"       => \$DEBUG,
+    "d=s"     => \$DEBUG,
     "n"       => \$NOOP,
-    "x=s"       => \$XRES, # local test hack
+    "x=s"     => \$XRES, # local test hack
 );
 
-# 
+exit unless $ores;
+
+my $KEYFILEID = shift ;
+my $KEYFILE = shift ;
+
 #     [ ] -k  # list all key states
 #     [ ] -p  # passive, don't restart services
 #     [ ] -t  # test all key states ( doesn't modify database )
@@ -98,11 +102,15 @@ capstan : an implementation of RFC 5011 for Infoblox
 
   ./capstan.pl --init --gm my.grid.master --user admin
 
+  ./capstan.pl -a org 9795 keyfile.txt
+
  Options:
 
   -a <domain>   Add a domain to track
+  -f <file>     txt file with DNSKEYS
   -r <domain>   Remove a domain to track
   -l            List tracked domains
+  -k            List tracked keys
 
   -help      Show a brief help message
   -C         Show the current configuration
@@ -126,7 +134,7 @@ capstan : an implementation of RFC 5011 for Infoblox
 
 # first try and initialise
 if ( $INIT ) {
-    if ( $GRIDMASTER and $USER ) {
+    unless ( $GRIDMASTER and $USER ) {
         initConfig( $GRIDMASTER , $USER )
     }
     else {
@@ -143,8 +151,12 @@ setUser( $conf , $USER ) && exit if $USER ;
 setMaster( $conf , $GRIDMASTER ) && exit if $GRIDMASTER ;
 setMember( $conf , $MEMBER ) && exit if $MEMBER ;
 
-# do some grid level settings and exit early
-addDomain( $conf , $ADD ) && exit if $ADD;
+# adding domains requires key validation, so we can only do this
+# after we've pulled the loadGridConf()
+
+pod2usage(2) && exit if ( $ADD and ! ( $KEYFILEID && $KEYFILE )) ;
+
+addDomain( $conf , $ADD , $KEYFILEID , $KEYFILE ) && exit if $ADD;
 delDomain( $conf , $REMOVE ) && exit if $REMOVE;
 
 # now talk to the grid and get the systemwide configuration
@@ -197,7 +209,25 @@ of the tracked domain
 # Add a domain to the tracker
 
 sub addDomain {
-    my ( $conf , $domain ) = @_ ;
+    my ( $conf , $domain , $keyid , $keyfile ) = @_ ;
+
+    # add the tracking zone
+    logit( "Adding tracking domain $domain");
+
+    # adding a domain requires finding the right key from the keyfile,
+    # validating it against RRSIG queries, and /then/ adding it to the grid
+
+    # so first get, and return an Net::DNS::RR::DNSKEY object
+    my $dnskey = getKeyfromFile( $domain , $keyid , $keyfile );
+    return 1 unless $dnskey ;
+
+#     print Dumper ( $dnskey );
+
+    # now query the universe for the RRSIGS related to this domain
+    return 1 unless validateKey( $conf , $domain , $keyid, $dnskey );
+
+    # [ ] after we add the domain, we could, in theory
+    # add this key as valid...
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
@@ -205,9 +235,6 @@ sub addDomain {
 
     # add the domain to be tracked
     my $fqdn = join ( "." , $domain , $conf->{zone} );
-
-    # add the tracking zone
-    logit( "Adding tracking domain $domain");
 
     my $tobj = Infoblox::DNS::Record::TXT->new(
         name => $fqdn,
@@ -300,6 +327,46 @@ sub getDomains {
 
     return ( \@domainlist );
 
+}
+
+#
+# read in a keyfile, and try and find the matching key for an ID
+#
+sub getKeyfromFile {
+    my ( $domain , $id , $file ) = @_ ;
+    logit( "Searching $file for $domain key with id $id");
+
+    my $ok = open(my $fh, "<", $file ) or logerror( "Can't read file $file");
+    return unless $ok ;
+
+    my $keyrr ;
+    # parse the file, assume they are single line, in DIG format
+    while (<$fh>) {
+        next unless /^\s*($domain)\.*\s+/ ;
+        next unless /key\s+id\s*=\s*($id)/;
+
+        # is this the right kind of key
+        unless ( /DNSKEY\s+257/ ) {
+            logerror( "key id $id is not a trust anchor");
+            last ;
+        }
+
+        chomp ; # ?? required ?
+
+        # othersiwe, we can snarf the key and assemble the RR
+        #  '( reNd3Sc= ) ;'
+        my ( $pubkey ) = $_ =~ /\(\s*(.*)\s*\)\s*;/ ;
+        my ( $flag , $pro , $algo ) = $_ =~ /DNSKEY\s+(\d+)\s+(\d+)\s+(\d+)/;
+
+        # Net::DNS::RR('name DNSKEY flags protocol algorithm publickey');
+        $keyrr = new Net::DNS::RR( "$domain DNSKEY $flag $pro $algo $pubkey");
+
+    }
+    close $fh ;
+
+    logerror( "Could not find any matching trust anchors") unless $keyrr ;
+
+    return $keyrr;
 }
 
 #
@@ -800,6 +867,57 @@ sub saveLocalConfig {
 #
 # DNS queries and resolver stuff handling
 #
+
+sub validateKey {
+    my ( $conf , $domain , $id, $keyrr ) = @_ ;
+    logit("Validating key for $domain");
+
+    my $resolver = getResolver( $conf );
+
+    logit( "Getting DNSKEYS for $domain");
+    # get ALL the DNSKEYS for this domain
+    my $keys = $resolver->send($domain , "DNSKEY", "IN");
+    # $query is a a "Net::DNS::Packet" object
+    if ( ! $keys ) {
+        # we got an error
+        logerror( "DNSKEY Search : $domain : " . $resolver->errorstring );
+        return 0 ;
+    }
+    my @allkeys = $keys->answer;
+
+    logit( "Getting RRSIG for $domain");
+    # get all the RRSIG stuff
+    my $sigs = $resolver->send($domain , "RRSIG", "IN");
+    if ( ! $sigs ) {
+        # we got an error
+        logerror( "RRSIG Search : $domain : " . $resolver->errorstring );
+        return 0 ;
+    }
+
+    # now find the right SIG for our project
+    my $sigrr ;
+    foreach my $rr ($sigs->answer) {
+        next unless $rr->typecovered() eq 'DNSKEY';
+        next unless $rr->keytag() eq $id;
+
+        # this one should match
+        $sigrr = $rr ;
+
+        print Dumper ( $rr ) if $DEBUG > 2 ;
+    }
+
+    unless ( $sigrr ) {
+        logit( "No RRSIG for id $id found");
+        return 0;
+    }
+
+    # now try and verify this signature with our orignal key
+    $sigrr->verify( \@allkeys , $keyrr );
+    say "sig for key : $id : " . $sigrr->vrfyerrstr ;
+
+    return 0 ;
+
+}
 
 sub checkAllKeys {
     my ( $conf ) = @_ ;
