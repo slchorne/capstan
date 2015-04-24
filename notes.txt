@@ -15,34 +15,15 @@ And thus used by the resolver component of the nameserver
 As per the spec it Should only manage anchors for known trust points and
 only for keys that have the SEP bit set
 
------------------------------------
-Ulf:
+Speaking to Ulf Ekberg, fron the BIND/Eng side of things:
 
-[ ] need to manually add the initial key
-    user types it in, we check it with a DNS query 
-    [ ] -a needs a key as well
-        [ ] read from an input file, use ALL keys from the
-            file for that zone
+If we check everything every hour we are well within any hold-down timers
+and revocation timers, so there is no need for an adavnced TTL monitor,
+just re-check everything 1/hour
 
-[ ] validation
-    Must bootstrap from a known trust anchor
-    check the DNSKEYset with the RRSIG
-    [ ] must start with a key, 
-    [ ] and always validate from known KEYS only.
-
-        [ ] use the same format as our 'export trust anchor'
-            format, which is 'dig + multiline' rolled back
-            into a single line
-
-    [ ] never add a key that wasn't checked by a trusted key
-    [ ] must also validate revoked keys with the same keyset
-[ ] hold-down - 30 days ?
-    yes, but checking more frequently helps with the revocation
-    process
-    [ ] if we run every hour, we can ignore TTLS
-[ ] revoke , YES, not neg anchors
-[ ] system changes - what if invalid ?
-    only follow managed trust points
+You can't add a domain to trust unless you also provide a key for that
+domain, this MUSt be an out of band operation to bootstrap the process.
+This key will also be used to validate any new keys
 
 -----------------------------------
 Design and implementation
@@ -71,8 +52,23 @@ Capstan
     [x] -k  # list all key states
     [x] --user   # add/configure the login account
 
+[ ] add a domain
+    You must bootstrap a domain with a known key
+    [ ] a key must already exist in the grid properties
+        [ ] use this key for bootstrap
+    [ ] just adds it to the tracker,
+    [ ] report existing domains as part of --init
+
 [x] need a nameserver to resolve the KSKs 
     [x] set an EA on one of the members.
+
+[ ] validation
+    [ ] a RRSIG applies to all DNSKEYS
+    [ ] validate a sig by the matching key
+    [ ] use the keytag (id) to match key <-> signature
+
+    [ ] and always validate from known KEYS only.
+    [ ] never add a key that wasn't checked by a trusted key
 
 [ ] grid or MEMBER level anchors, not views
     [ ] how to set the location ?
@@ -106,6 +102,9 @@ risk someone replacing with data with bad data
         [x] key id = 33878
 
 [ ] pull any new keys added to the grid from outside this process...
+    [ ] ONLY if they are part of a tracked domain,
+        [ ] validate these keys
+    [ ] this can also be used to bootstrap a new domain
 
 [ ] we should validate the signing of the key, not just plain import it
     [ ] need to walk the signing chain
@@ -116,12 +115,19 @@ risk someone replacing with data with bad data
     [ ] Periodic intervals for running the script is OK for T-Systems.
     [ ] Run as a cron job at a fine grained period.
         smaller than the window of the sleep timers
+        smaller than the window of the revocation windows
 
         "Given that the minimum refresh time is one hour, such a fixed
         interval should be one hour in order to conform to the RFC"
 
 [ ] pending keys get stored in the dataset until they are considered valid
     [ ] just follow the rules of the statemachine
+
+[ ] revoking keys - 
+    [ ] a revoked key must still be in the signed list
+        ( as this is how the owner verifies this key )
+        [ ] revoked mey must pass validation
+    [ ] check statemachine for revokation rules
 
 [-] can't use a pure-perl net::dns::sec - will be platform dependent. ?
 
