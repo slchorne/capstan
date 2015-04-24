@@ -870,11 +870,11 @@ sub saveLocalConfig {
 
 sub validateKey {
     my ( $conf , $domain , $id, $keyrr ) = @_ ;
-    logit("Validating key for $domain");
+    logit("Validating key for $domain in DNS");
 
     my $resolver = getResolver( $conf );
 
-    logit( "Getting DNSKEYS for $domain");
+    logit( "Querying $domain for DNSKEY");
     # get ALL the DNSKEYS for this domain
     my $keys = $resolver->send($domain , "DNSKEY", "IN");
     # $query is a a "Net::DNS::Packet" object
@@ -885,7 +885,7 @@ sub validateKey {
     }
     my @allkeys = $keys->answer;
 
-    logit( "Getting RRSIG for $domain");
+    logit( "Querying $domain for RRSIG");
     # get all the RRSIG stuff
     my $sigs = $resolver->send($domain , "RRSIG", "IN");
     if ( ! $sigs ) {
@@ -912,8 +912,13 @@ sub validateKey {
     }
 
     # now try and verify this signature with our orignal key
-    $sigrr->verify( \@allkeys , $keyrr );
-    say "sig for key : $id : " . $sigrr->vrfyerrstr ;
+    if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
+        logit( "key : $id : is valid" );
+        return 1 ;
+    }
+    else {
+        logerror( "key : $id : " . $sigrr->vrfyerrstr ) ;
+    }
 
     return 0 ;
 
