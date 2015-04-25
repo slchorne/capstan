@@ -375,6 +375,9 @@ sub getKeys {
         my $level = getAttributes( $kobj , 'RFC5011Managed' );
         my $loc = getAttributes( $kobj , 'RFC5011Location' );
 
+        # perhaps a platter hierarchy, with a single namespced key?
+        # [ ] well, execpt that is breaks if there is a special
+        #     char in any of the EA values ( e.g. "my:dumb:viewname" )
 #         $keyData->{$domain}{$id}{ongrid} = 'true';
         $keyData->{$level}{$loc}{$domain}{$id} = {
             ongrid => 'true',
@@ -693,13 +696,27 @@ sub setUser {
 sub listKeys {
 
     local $Data::Dumper::Terse = 1 ;
+    local $Data::Dumper::Maxdepth = 4 ;
     print Dumper ( $conf->{keys} );
 
-#     foreach my $domain ( sort keys %{ $conf->{keys} } ) {
-#         foreach my $id ( sort keys %{ $conf->{keys}{$domain} } ) {
-#             print " $domain : $id\n";
+    # we want a better formatter than data::dumper
+    # in theory we could do this at load time, but the sorting may suck
+    # really, we want recursion here and be ignorant of the struct
+    # but that turns out to be more lines of code...
+
+#     print "\n";
+#     foreach my $area ( sort keys %{ $conf->{keys} } ) {
+#         foreach my $loc ( sort keys %{ $conf->{keys}{$area} } ) {
+#             foreach my $domain ( sort keys %{ $conf->{keys}{$area}{$loc} } ) {
+#                 my $drec = $conf->{keys}{$area}{$loc}{$domain};
+#                 foreach my $id ( sort keys %{ $drec } ) {
+#                     print "$area : $loc : $domain : $id\n";
+#                 }
+#             }
 #         }
 #     }
+#     print "\n";
+
     return 1;
 }
 
