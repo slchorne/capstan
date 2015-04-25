@@ -814,6 +814,9 @@ sub loadGridConf {
     # we're passed the config from disk with the login info
     # so now append to it...
 
+    # and we track any errors in the config, in case something got messed up
+    my $conferrors ;
+
     my $session = startSession( $conf );  
     return unless $session ;
 
@@ -822,7 +825,7 @@ sub loadGridConf {
         object => "Infoblox::Grid::Member",
         extensible_attributes => { RFC5011 => { value => "nameserver" } }
     );
-    getSessionErrors( $session , "RFC5011 member" );
+    $conferrors++ if getSessionErrors( $session , "RFC5011 nameserver member" );
 
     # insert it into the main config
     if ( $dnsmember ) {
@@ -836,24 +839,26 @@ sub loadGridConf {
         object => "Infoblox::DNS::Zone",
         name => $conf->{zone},
     );
-    getSessionErrors( $session , "zone $conf->{zone}" );
-
-    unless ( $zobj ) {
-        logerror ( "There are problems with the config, exiting" );
-        return undef ;
-    }
+    $conferrors++ if getSessionErrors( $session , "zone $conf->{zone}" );
 
     $conf->{zoneOK} = 'true' ;
 
-    # now get records from that zone
-    $conf->{domains} = getDomains( $conf );
-    $conf->{keys} = getKeys( $conf );
+    # now get records from that zone, if we can
+    if ( $zobj ) {
+        $conf->{domains} = getDomains( $conf );
+        $conf->{keys} = getKeys( $conf );
+    }
 
     # and get any existing trust anchors
     $conf->{anchors} = getAnchors( $conf );
 
     print Dumper ( (caller(0))[3] ) if $DEBUG > 1 ;
     showConfig( $conf ) if $DEBUG > 1 ;
+
+    if ( $conferrors ) {
+        logerror ( "There are problems with the config, exiting" );
+        return undef ;
+    }
 
     return $conf ;
 
@@ -1136,6 +1141,8 @@ sub checkAllKeys {
 
 sub getResolver {
     my ( $conf ) = @_ ;
+
+    return undef unless $conf->{nameserver};
 
     # uses fancy ref caching..
     return $conf->{resolver} if $conf->{resolver} ;
