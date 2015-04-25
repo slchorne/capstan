@@ -919,23 +919,33 @@ sub validateAnchor {
 
     # and get the signatures, and index them by the ID
     # and filter them by the right type
-    # [ ] may become a generic method
+    # this loop [ ] may become a generic method
     my $sigs = querybyType( $conf , $domain , 'RRSIG' );
 
     my $sigindex ;
-    # now find the right SIG for our project
+    # now find the right SIGs for our project and put them in an index
     foreach my $rr ($sigs->answer) {
         next unless $rr->typecovered() eq 'DNSKEY';
         $sigindex->{ $rr->keytag() } = $rr ;
     }
 
+    # so now compare the anchors on the grid with the keys
+    # we pulled from DNS
     my $validIDs ;
+    my $badkeys ;
 
     # then compare these to our anchors
     foreach my $digest ( keys %{ $anchors } ) {
         unless ( $keyindex->{$digest} ) {
-            logerror( "Anchor : $digest : is not a valid key" );
-            next ;
+            logerror( "Anchor : $digest : is not a published key" );
+            # [ ] one bad key kinda ruins the batch
+            #     (If you are adding a new domain to track)
+
+            # and report the key
+            logerror( "key $anchors->{$digest}{key}");
+#             print Dumper ( $anchors );
+            $badkeys++;
+            last ;
         }
 
         # otherwise this key checks out, lets double check
@@ -947,6 +957,7 @@ sub validateAnchor {
 
         unless ( $keyrr->sep() ){
             logerror( "Anchor : $digest is not a SEP key" );
+            $badkeys++;
             next ;
         }
 
@@ -954,6 +965,7 @@ sub validateAnchor {
         my $sigrr = $sigindex->{ $id };
         unless ( $sigrr ) {
             logerror( "Anchor : $digest : $id : missing RRSIG" );
+            $badkeys++;
             next ;
         }
 
@@ -965,11 +977,18 @@ sub validateAnchor {
         }
         else {
             logerror( "Anchor : $digest : $id : " . $sigrr->vrfyerrstr ) ;
+            $badkeys++;
         }
 
     }
 
-    return $validIDs ;
+    # any bad key ruins the batch
+    if ( $badkeys ) {
+        return undef ;
+    }
+    else {
+        return $validIDs ;
+    }
 
 }
 
