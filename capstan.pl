@@ -569,23 +569,24 @@ sub updateKey {
 
 #
 # add a key to the grid properties
+#
+# Requires a domain, and a Net::DNS::RR::DNSKEY record
+#
+
+# You can only ever publish keys that were already in the system
+# so all you should need is the config, and a ref to the record
+# the rest we can pull from the record
 # 
 sub publishKey {
-    my ( $conf , $domain , $id , $info ) = @_ ;
+    my ( $conf , $domain , $keyrr ) = @_ ;
+
+    my $id = $keyrr->keytag();
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
     return unless $session ;
 
     logit( "Trusting key $id for $domain");
-
-    # get the config for this key
-    my $rdata = $conf->{keys}{$domain}{$id}{rr};
-
-    unless ( $rdata ) {
-        logerror( "rdata for key $id was not found" );
-        return ;
-    }
 
     # We're ok, continue to configure the grid
     my ( $gobj ) = $session->get(
@@ -595,16 +596,16 @@ sub publishKey {
 
     my $gridkeys = $gobj->dnssec_trusted_keys();
 
-    print Dumper ( (caller(0))[3] , $rdata ) if $DEBUG ;
+    print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
 
     # create and add the key object
     # [ ] hope that it isn't already there...
 
     my $keydef = Infoblox::DNS::DnssecTrustedKey->new(
            fqdn => $domain,
-           algorithm => getAlgorithm( $rdata->{algorithm} ),
+           algorithm => getAlgorithm( $keyrr->algorithm() ),
 #            algorithm => $rdata->{algorithm},
-           key => $rdata->{key},
+           key => $keyrr->key(),
     );
     getApiErrors() unless $keydef ;
 
@@ -1244,11 +1245,17 @@ sub validateDomainKeys {
         # only track trust anchors
         next unless $keyrr->sep();
 
+        # keep all the dnsinfo, track state
         my $id = $keyrr->keytag();
+        $keystate->{$id} = {
+            rdata => $keyrr,
+            state => undef ,
+        };
+        my $krec = $keystate->{$id};
 
         if ( $keyrr->revoke() ) {
             logit( "key : $id : revoked" );
-            $keystate->{$id} = 'revoked';
+            $krec->{state} = 'revoked';
             next ;
         }
 
@@ -1256,7 +1263,7 @@ sub validateDomainKeys {
 
         unless ( $sigrr ) {
             logit( "No RRSIG for id $id found");
-            $keystate->{$id} = 'nosig';
+            $krec->{state} = 'nosig';
             next ;
         }
 
@@ -1264,11 +1271,11 @@ sub validateDomainKeys {
 
         # now try and verify this signature with our orignal key
         if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
-            $keystate->{$id} = 'valid';
+            $krec->{state} = 'valid';
             logit( "key : $id : is valid" );
         }
         else {
-            $keystate->{$id} = 'error';
+            $krec->{state} = 'error';
             logerror( "key : $id : " . $sigrr->vrfyerrstr ) ;
         }
     }
@@ -1283,10 +1290,10 @@ sub checkAllKeys {
 
 #     # [ ] 
 #     #     we're just testing for now
-#     discoKey( $conf , 'com' , '30909' ) ;
+#     discoKey( $conf , 'com' , $keyrr  ) ;
 # 
 #     #
-#     publishKey( $conf , 'com' , '30909' );
+#     publishKey( $conf , 'com' , $keyrr );
 #
 
     # we have a bunch of nested loops here beaauce
@@ -1299,6 +1306,8 @@ sub checkAllKeys {
 
                 # punt a domain to DNS, get back the state of all ids
                 my $validIDs = validateDomainKeys( $conf , $domain );
+
+#                 print Dumper ( $validIDs );
 
                 checkState ( $conf , {
                     level => $level,
@@ -1369,10 +1378,12 @@ sub checkState {
     # [ ] then walk any dangling keys on the grid
 
     # $validKeyIDs is a HASHREF with the state for each ID
+    # and the Net::DNS::RR::DNSKEY record
     foreach my $id ( keys %{ $validKeyIDs } ) {
 
         my $grec = $gdata->{$id};
-        my $kstate = $validKeyIDs->{$id};
+        my $krec = $validKeyIDs->{$id};
+        my $kstate = $krec->{state};
 
         # identify new keys
         unless ( $grec ) {
@@ -1405,14 +1416,13 @@ sub checkState {
                 # release from the timers
                 if ( time() > $addendtime ) {
                     logit( "state : $id : pending -> valid : offhold");
-
                     $grec->{state} = 'valid';
 
-#                     print Dumper ( $grec ) if $DEBUG > 1 ;
-                    print Dumper ( $grec );
+                    print Dumper ( $grec ) if $DEBUG > 1 ;
+#                     print Dumper ( $grec );
 
                     updateKey( $conf , $grec );
-                    # [ ] publishKey
+                    publishKey( $conf , $domain , $krec->{rdata} );
 
                 }
                 else {
