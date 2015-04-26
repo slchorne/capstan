@@ -173,6 +173,40 @@ listKeys( $conf ) && exit if $LISTKEYS ;
 
 checkAllKeys( $conf );
 
+# the statemachine
+#
+# Add Hold down time == 30 days ( 2592000 seconds )
+# Remove Hold down time == 30 days 
+#
+# Any new 'Valid' keys can be published
+# Any new 'Revoked' keys can be discoed
+# anything else is just a flag in the database
+# 
+#     The key has not or ever been seen
+# Start -> AddPend : if valid DNSKEY in RRSet with a new SEP key
+# 
+#     Wait until publishing
+# AddPend -> Start : if key in not in valid DNSKEY RRSet
+#         -> Valid : if key is in a valid RRSet after the 'add time'
+#                    and it is still valid in the rrset
+# 
+#     You can publish this key
+# Valid -> Missing : if key in not in valid DNSKEY RRSet
+#       -> Revoked : if key has "REVOKED" bit set
+# 
+#     The key went missing without being revoked (abnormal state)
+#     Continue to publish this key
+# Missing -> Valid : if key is in valid DNSKEY RRSet
+#         -> Revoked : if key has "REVOKED" bit set 
+# 
+#     DO NOT publish this key
+# Revoked -> Removed : if revoked key is not ins RREST for N? time
+# 
+#     DO NOT publish this key, and never re-publish this key
+#   Removed -> /dev/null
+# And a removed key is no-longer of concern
+
+
 # step 2 add any new keys
 # [ ] this follows the statemachine,
 #     we're just testing for now
@@ -212,7 +246,7 @@ sub addDomain {
     # so we just use the config to query the grid and DNS
     # and return any valid anchors for this domain as a list of IDs
 
-    my $anchorids = validateAnchor( $conf , $domain );
+    my ( $anchorids , @keys ) = validateAnchor( $conf , $domain );
 
     return 1 unless $anchorids ;
 
@@ -220,12 +254,10 @@ sub addDomain {
     my $session = startSession( $conf );  
     return unless $session ;
 
-    # add the tracking zone
+    # add the domain to be tracked to the zone
     logit( "Adding tracking domain $domain");
 
     my $level = 'grid';
-
-    # add the domain to be tracked
     my $fqdn = join ( "." , $domain , $level , $conf->{zone} );
 
     my $tobj = Infoblox::DNS::Record::TXT->new(
@@ -233,27 +265,51 @@ sub addDomain {
         text => "domain:$domain loc:$level",
         comment => $AUTOCOMM,
         extensible_attributes => { 
-            RFC5011Managed => $level,
-            RFC5011Location => $level,
-            RFC5011 => 'domain' 
+            RFC5011Level => $level,
+            RFC5011Name => $level,
+            RFC5011Type => 'domain' 
         },
     );
             
     $session->add( $tobj );
     getSessionErrors( $session , "domain $fqdn" );
 
-    # then add and valid key as a trackable anchor
+    # then add and the valid key as a trackable anchor
     foreach my $id ( @{ $anchorids } ) {
         addKey( $conf , {
             domain => $domain,
             id => $id,
             level => $level,
             location => $level,
+            state => 'valid',
             info => "",
         });
 
     }
-    
+
+    # lastly add any OTHER keys for this domain as pending
+    # we can throw away the query data after this, because we will
+    # do another query if we need to later.
+
+    # we have 2 lists here, so there is no cleaner way to do this
+
+    logit( "Adding additional keys from domain $domain");
+    foreach my $rr ( @keys ) {
+        my $id = $rr->keytag() ;
+        
+        next if ( grep ( /^$id$/ , @{ $anchorids } ) );
+
+        addKey( $conf , {
+            domain => $domain,
+            id => $id,
+            level => $level,
+            location => $level,
+            state => 'pending',
+#             info => "",
+        });
+
+    }
+
     return 1 ;
 
 }
@@ -275,21 +331,29 @@ sub delDomain {
     return unless $session ;
 
     # remove the domain to be tracked
-    my $fqdn = join ( "." , $domain , $conf->{zone} );
+    my $level = 'grid';
+    my $parent = join ( "." , $domain , $level , $conf->{zone} );
 
-    # add the tracking zone
     logit( "Deleting tracking domain $domain");
 
-    my ( $tobj ) = $session->get(
-        object => "Infoblox::DNS::Record::TXT",
-        name => $fqdn,
-#         extensible_attributes => { RFC5011 => { value => "domain" } }
-    );
-    getSessionErrors( $session , "find domain $fqdn" );
+    # now just remove anything under this namespace
 
-    if ( $tobj ) {
-        $session->remove( $tobj );
-        getSessionErrors( $session , "delete domain $fqdn" );
+    my ( @results ) = $session->search(
+        object => "Infoblox::DNS::Record::TXT",
+        name => $parent,
+        zone => $conf->{zone},
+#         extensible_attributes => { RFC5011Type => { value => "domain" } }
+    );
+    getSessionErrors( $session , "find domain $parent" );
+
+    if ( @results ) {
+        foreach my $rec ( @results ) {
+            my $name = $rec->name();
+            logit( "remove : $name" );
+
+            $session->remove( $rec );
+            getSessionErrors( $session , "delete rr $name" );
+        }
     }
 
     return 1 ;
@@ -301,7 +365,7 @@ sub delDomain {
 List all the domains being tracked
 
 This will get all the TXT records in the rfc5011.local zone where the
-extensible_attribute 'RFC5011' == 'domain'
+extensible_attribute 'RFC5011Type' == 'domain'
 
 =cut
 
@@ -320,9 +384,9 @@ sub getDomains {
     my ( @domains ) = $session->search(
         object => "Infoblox::DNS::Record::TXT",
         zone => $conf->{zone},
-        extensible_attributes => { RFC5011 => { value => "domain" } }
+        extensible_attributes => { RFC5011Type => { value => "domain" } }
     );
-    getSessionErrors( $session , "list domains" );
+    getSessionErrors( $session , "list domains" ) if $DEBUG ;
 
 #     print Dumper ( \@domains );
 
@@ -331,8 +395,8 @@ sub getDomains {
     if ( @domains ) {
         foreach my $dobj ( @domains ) {
             ( my $name = $dobj->name() ) =~ s/\.$conf->{zone}//;
-            my $level = getAttributes( $dobj , 'RFC5011Managed' );
-            my $loc = getAttributes( $dobj , 'RFC5011Location' );
+            my $level = getAttributes( $dobj , 'RFC5011Level' );
+            my $loc = getAttributes( $dobj , 'RFC5011Name' );
 
             $domaindata->{ $loc }{ $loc } = $name ;
 
@@ -361,9 +425,9 @@ sub getKeys {
     my ( @keys ) = $session->search(
         object => "Infoblox::DNS::Record::TXT",
         zone => $conf->{zone},
-        extensible_attributes => { RFC5011 => { value => "key" } }
+        extensible_attributes => { RFC5011Type => { value => "key" } }
     );
-    getSessionErrors( $session , "list keys" );
+    getSessionErrors( $session , "list keys" ) if $DEBUG ;
 
     my $keyData = {};
 
@@ -372,8 +436,9 @@ sub getKeys {
         my ( $id , $domain ) = $kobj->name() 
             =~ /(\d+).key.(\S+).$conf->{zone}/;
 
-        my $level = getAttributes( $kobj , 'RFC5011Managed' );
-        my $loc = getAttributes( $kobj , 'RFC5011Location' );
+        my $level = getAttributes( $kobj , 'RFC5011Level' );
+        my $loc = getAttributes( $kobj , 'RFC5011Name' );
+        my $state = getAttributes( $kobj , 'RFC5011State' );
 
         # perhaps a platter hierarchy, with a single namespced key?
         # [ ] well, execpt that is breaks if there is a special
@@ -382,6 +447,7 @@ sub getKeys {
         $keyData->{$level}{$loc}{$domain}{$id} = {
             ongrid => 'true',
             query => 'not found',
+            state => $state,
         };
     }
 
@@ -422,10 +488,13 @@ sub getAnchors {
 sub addKey {
     my ( $conf , $rec ) = @_ ;
 
+    # we have to set some defaults of the PAII will choke on
+    # invalid/blank EA values
     my $id = $rec->{id};
     my $domain = $rec->{domain};
     my $level = $rec->{level} || 'grid' ;
     my $location = $rec->{location} || 'grid' ;
+    my $state = $rec->{state} || 'start' ;
     my $info = $rec->{info};
 
     # now try and connect to the grid and make some other settings
@@ -436,16 +505,18 @@ sub addKey {
     my $fqdn = join ( "." , $id , 'key' , $domain , $level , $conf->{zone} );
 
     # add the tracking zone
-    logit( "Adding key $id for $domain");
+    logit( "Adding key $id for $domain as $state");
 
     my $tobj = Infoblox::DNS::Record::TXT->new(
         name => $fqdn,
         text => "domain:$domain id:$id loc:$level",
         comment => $AUTOCOMM,
         extensible_attributes => { 
-            RFC5011Managed => $level,
-            RFC5011Location => $location,
-            RFC5011 => 'key' 
+            RFC5011Time => time(),
+            RFC5011State => $state,
+            RFC5011Level => $level,
+            RFC5011Name => $location,
+            RFC5011Type => 'key' 
         },
     );
             
@@ -581,7 +652,7 @@ sub setMember {
     my @members = $session->get(
         object => "Infoblox::Grid::Member",
 #         name =>
-#         extensible_attributes => { RFC5011 => { value => "nameserver" } }
+#         extensible_attributes => { RFC5011Type => { value => "nameserver" } }
     );
 
     my $memberinfo ;
@@ -594,7 +665,7 @@ sub setMember {
 
         # see if this member is the query member
         # and track it for cleanup
-        $state = getAttributes( $mobj , 'RFC5011' );
+        $state = getAttributes( $mobj , 'RFC5011Type' );
         push @cleanmembers , $mobj  if $state ;
 #         if ( $mobj->extensible_attributes()
 #             && $mobj->extensible_attributes()->{RFC5011}
@@ -620,14 +691,14 @@ sub setMember {
     if ( $newobj ) {
         if ( @cleanmembers ) {
             foreach my $cobj ( @cleanmembers ) {
-                setAttributes( $cobj , { RFC5011 => '' } );
+                setAttributes( $cobj , { RFC5011Type => '' } );
                 $session->modify( $cobj );
                 getSessionErrors( $session ); 
             }
         }
 
         # then (re) set this member
-        setAttributes( $newobj , { RFC5011 => 'nameserver' } );
+        setAttributes( $newobj , { RFC5011Type => 'nameserver' } );
         $session->modify( $newobj );
         getSessionErrors( $session ); 
     }
@@ -717,7 +788,36 @@ sub listKeys {
 #     }
 #     print "\n";
 
+    my @k = traverseKeys( $conf , "", 'keys' );
+#     my @k = traverseKeys( $conf->{keys} , "", keys %{ $conf->{keys} } );
+    print Dumper ( \@k );
+
     return 1;
+}
+
+# functional code, only ever pass singletons
+sub traverseKeys {
+    # note the implicit shift of the array
+    my ( $rec , $path , $val , @keys ) = @_;
+
+    # bubble up an array
+    my @res ;
+
+    # across
+    push @res , traverseKeys( $rec , $path , @keys ) if @keys ;
+
+    my $newpath = $path ? "$path : $val" : $val ;
+
+    # exit condition
+    return "$newpath" if $val =~ /\d/;
+
+    # down
+    push @res , traverseKeys( $rec->{$val} , "$newpath",
+                    keys %{ $rec->{$val} } ) 
+            if $rec->{$val} =~/HASH/ ;
+
+    return @res ;
+
 }
 
 #
@@ -795,9 +895,11 @@ sub initConfig {
     return unless $session ;
 
     # Create some EAs
-    foreach my $ea ( qw( RFC5011
-                RFC5011Managed
-                RFC5011Location
+    foreach my $ea ( qw( RFC5011Type
+                RFC5011Time
+                RFC5011State
+                RFC5011Level
+                RFC5011Name
         ) ) {
         logit( "Adding EA : $ea" );
         my ( $dobj ) = Infoblox::Grid::ExtensibleAttributeDef->new(
@@ -840,7 +942,7 @@ sub loadGridConf {
     # search for all grid member objects to find the namserver to use
     my ( $dnsmember ) = $session->get(
         object => "Infoblox::Grid::Member",
-        extensible_attributes => { RFC5011 => { value => "nameserver" } }
+        extensible_attributes => { RFC5011Type => { value => "nameserver" } }
     );
     $conferrors++ if getSessionErrors( $session , "RFC5011 nameserver member" );
 
@@ -921,7 +1023,8 @@ sub validateAnchor {
     my ( $conf , $domain ) = @_ ;
 
     # when the config loaded, we got the current anchors from the grid
-    # so we just use that data
+    # and indexed them by their digest.
+    # so we just use that data as the bootstrap point
 
     my $anchors = $conf->{anchors}{$domain};
     unless ( $anchors ) {
@@ -931,16 +1034,23 @@ sub validateAnchor {
 
     logit("Validating existing anchors for $domain in DNS");
 
-    # now, we don't have the key ID for this Anchor, and the algorithm is
-    # a bit messed up, so the safest thing to do is to query the source
-    # and verify that these keys are published keys
+    # We don't have the key ID for this Anchor, and the 'algorithm'
+    # string is a bit messed up, so the safest thing to do is to 
+    # query the DNS source and verify that these keys are published keys
+    # and use the ID from those published keys
 
     my $keys = querybyType( $conf , $domain , 'DNSKEY' );
-    # now index these keys by their digest
-    my $keyindex = { map { md5_base64 ( $_->key() ) => $_ } $keys->answer };
+    # now index these keys by their digest, but only keep SEP keys
+    my $keyindex ;
+    foreach my $krr ($keys->answer) {
+        next unless $krr->sep();
+        $keyindex->{ md5_base64 ( $krr->key() ) } = $krr;
+    }
+#     my $keyindex = { map { md5_base64 ( $_->key() ) => $_ } $keys->answer };
 
-    # and get the signatures, and index them by the ID
+    # THEN get the signatures, and index them by the ID
     # and filter them by the right type
+
     # this loop [ ] may become a generic method
     my $sigs = querybyType( $conf , $domain , 'RRSIG' );
 
@@ -956,18 +1066,16 @@ sub validateAnchor {
     my $validIDs ;
     my $badkeys ;
 
-    # then compare these to our anchors
+    # compare by matching the md5_base64() digest
     foreach my $digest ( keys %{ $anchors } ) {
         unless ( $keyindex->{$digest} ) {
-            logerror( "Anchor : $digest : is not a published key" );
             # [ ] one bad key kinda ruins the batch
             #     (If you are adding a new domain to track)
-
-            # and report the key
             logerror( "key $anchors->{$digest}{key}");
-#             print Dumper ( $anchors );
+            logerror( "Anchor : $digest : is not a published key" );
+
             $badkeys++;
-            last ;
+            next ;
         }
 
         # otherwise this key checks out, lets double check
@@ -1004,15 +1112,58 @@ sub validateAnchor {
 
     }
 
+    # lastly, we don't know the full context of this validate request,
+    # so we need to also pass back the keys we found to the parent and let
+    # that decide what to do with them
+
     # any bad key ruins the batch
     if ( $badkeys ) {
+        logit( "Cannot add '$domain' without a valid set of anchors" );
         return undef ;
     }
     else {
-        return $validIDs ;
+        return ( $validIDs , values %{ $keyindex } );
     }
 
 }
+
+#
+# [ ] GN:DN ??
+#
+# inserts a list of Net::DNS:RR objects into the 'keys' part of the
+# config.
+#
+# also flags those records with some sort of state
+#
+sub addKeyRRsToConfig {
+    my ( $conf , $state , @rrlist ) = @_ ;
+
+    foreach my $rr ( @rrlist ) {
+
+        my $id = $rr->keytag() ;
+
+#         # and add the dnsinfo to the config
+#         $conf->{keys}{$domain}{$id}{state} = $state,
+#         $conf->{keys}{$domain}{$id}{query} = "ok";
+#         $conf->{keys}{$domain}{$id}{rr} = {
+#             flags => $rr->flags(),
+#             sep => $rr->sep(),
+#             # we need the WHOLE key for the trust anchor
+#             key => $rr->key(),
+#             # and keep an MD5 sum for repairs and regex
+#             digest => md5_base64 ( $rr->key() ),
+#             algorithm => $rr->algorithm(),
+# #                     key => substr($rr->key(), -8, 8),
+#             private => $rr->privatekeyname(),
+#             tag => $rr->keytag(),
+#         }
+
+    }
+}
+
+
+
+#
 
 #
 # Generic DNS loopup operation
@@ -1033,6 +1184,9 @@ sub querybyType {
     return $rrs ;
 }
 
+#
+# [ ] GN:DN ?
+#
 sub validateKey {
     my ( $conf , $domain , $id, $keyrr ) = @_ ;
     logit("Validating key for $domain in DNS");

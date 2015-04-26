@@ -35,6 +35,7 @@ Capstan
         while it is processing from a cron job ?
 
     [ ] or are there no risks of collisions, anyway ?
+        since admin functions don't add/remove anchors
 
 [ ] Command line options
 
@@ -49,8 +50,10 @@ Capstan
     [ ] -s  # re-sync all keys (quite the hammer)
             # rebuilds from a dead/broken script
     [x] -a  # add a domain
+
     [ ] -v  # view ( add domain to just this view )
     [ ] -m  # member ( add domain to just this member )
+
     [x] -r  # remove a domain
     [x] -l  # list domains
     [x] -k  # list all key states
