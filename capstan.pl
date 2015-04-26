@@ -169,53 +169,16 @@ delDomain( $conf , $REMOVE ) && exit if $REMOVE;
 listDomains( $conf ) && exit if $LISTDOMAINS ;
 listKeys( $conf ) && exit if $LISTKEYS ;
 
-# Step one, query all the Keys out in the real workd
+###
+#
+# Main statemachine :
+#
+
+# Step 1 , compare all keys on the grid to all keys in DNS,
+#   and update the state of anything that changes
+#
 
 checkAllKeys( $conf );
-
-# the statemachine
-#
-# Add Hold down time == 30 days ( 2592000 seconds )
-# Remove Hold down time == 30 days 
-#
-# Any new 'Valid' keys can be published
-# Any new 'Revoked' keys can be discoed
-# anything else is just a flag in the database
-# 
-#     The key has not or ever been seen
-# Start -> AddPend : if valid DNSKEY in RRSet with a new SEP key
-# 
-#     Wait until publishing
-# AddPend -> Start : if key in not in valid DNSKEY RRSet
-#         -> Valid : if key is in a valid RRSet after the 'add time'
-#                    and it is still valid in the rrset
-# 
-#     You can publish this key
-# Valid -> Missing : if key in not in valid DNSKEY RRSet
-#       -> Revoked : if key has "REVOKED" bit set
-# 
-#     The key went missing without being revoked (abnormal state)
-#     Continue to publish this key
-# Missing -> Valid : if key is in valid DNSKEY RRSet
-#         -> Revoked : if key has "REVOKED" bit set 
-# 
-#     DO NOT publish this key
-# Revoked -> Removed : if revoked key is not ins RREST for N? time
-# 
-#     DO NOT publish this key, and never re-publish this key
-#   Removed -> /dev/null
-# And a removed key is no-longer of concern
-
-
-# step 2 add any new keys
-# [ ] this follows the statemachine,
-#     we're just testing for now
-
-# [ ] 
-discoKey( $conf , 'com' , '30909' ) ;
-
-#
-publishKey( $conf , 'com' , '30909' );
 
 
 exit ;
@@ -396,11 +359,13 @@ sub getDomains {
 
     if ( @domains ) {
         foreach my $dobj ( @domains ) {
-            ( my $name = $dobj->name() ) =~ s/\.$conf->{zone}//;
             my $level = getAttributes( $dobj , 'RFC5011Level' );
             my $loc = getAttributes( $dobj , 'RFC5011Name' );
 
-            $domaindata->{ $loc }{ $loc } = $name ;
+            my $parent = "$loc.$level.$conf->{zone}";
+            ( my $name = $dobj->name() ) =~ s/\.$parent//;
+
+            push @{ $domaindata->{ $level }{ $loc } } , $name ;
 
         }
     }
@@ -435,20 +400,25 @@ sub getKeys {
 
     # now walk each of them and insert them into the conf
     foreach my $kobj ( @keys ) {
-        my ( $id , $domain ) = $kobj->name() 
-            =~ /(\d+).key.(\S+).$conf->{zone}/;
-
         my $level = getAttributes( $kobj , 'RFC5011Level' );
         my $loc = getAttributes( $kobj , 'RFC5011Name' );
         my $state = getAttributes( $kobj , 'RFC5011State' );
+
+        my $parent = "$loc.$level.$conf->{zone}";
+
+        my ( $id , $domain ) = $kobj->name() 
+            =~ /(\d+).key.(\S+).$parent/;
 
         # perhaps a platter hierarchy, with a single namespced key?
         # [ ] well, execpt that is breaks if there is a special
         #     char in any of the EA values ( e.g. "my:dumb:viewname" )
 #         $keyData->{$domain}{$id}{ongrid} = 'true';
         $keyData->{$level}{$loc}{$domain}{$id} = {
-            ongrid => 'true',
-            query => 'not found',
+            domain => $domain,
+            id => $id,
+            level => $level,
+            lvlname => $loc,
+            time => getAttributes( $kobj , 'RFC5011Time' ),
             state => $state,
         };
     }
@@ -525,6 +495,46 @@ sub addKey {
             
     $session->add( $tobj );
     getSessionErrors( $session , "key $fqdn" );
+
+    return 1 ;
+
+}
+
+#
+# modify a key
+#
+sub updateKey {
+    my ( $conf , $rec ) = @_ ;
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    # add the domain to be tracked
+    my $fqdn = join ( "." , $rec->{id}, 'key',
+        $rec->{domain},
+        $rec->{lvlname},
+        $rec->{level},
+        $conf->{zone} );
+
+    # add the tracking zone
+    logit( "modify key : $rec->{id} : $fqdn : $rec->{state}");
+
+    my ( $tobj ) = $session->search(
+        object => "Infoblox::DNS::Record::TXT",
+        name => $fqdn,
+#         zone => $conf->{zone},
+#         extensible_attributes => { RFC5011Type => { value => "key" } }
+    );
+    getSessionErrors( $session , "modify key" ) if $DEBUG ;
+
+    my $exts = $tobj->extensible_attributes();
+    $exts->{RFC5011Time} = time() ;
+    $exts->{RFC5011State} = $rec->{state} ;
+    $tobj->extensible_attributes( $exts );
+
+    $session->modify( $tobj );
+    getSessionErrors( $session ); 
 
     return 1 ;
 
@@ -770,7 +780,7 @@ sub setUser {
 sub listKeys {
 
     local $Data::Dumper::Terse = 1 ;
-    local $Data::Dumper::Maxdepth = 4 ;
+#     local $Data::Dumper::Maxdepth = 4 ;
     print Dumper ( $conf->{keys} );
 
     # we want a better formatter than data::dumper
@@ -854,6 +864,8 @@ sub initConfig {
             password => "",
         },
         zone => "rfc5011.infoblox.local",
+        holdaddtime => 2592000, # 30 days
+        holdremtime => 2592000, # 30 days
     };
 
     # get a password for the username
@@ -973,6 +985,12 @@ sub loadLocalConfig {
         logerror( "did you run '--init' first ?");
     }
 
+    if ( $XRES ) {
+        # developer hacks
+        $data->{holdaddtime} = 20;
+        $data->{holdremtime} = 20;
+    }
+
     print Dumper ( $data ) if $DEBUG > 1 ;
 
     if ( $SHOWLOCALCONFIG ) {
@@ -991,6 +1009,12 @@ sub saveLocalConfig {
 
 #
 # DNS queries and resolver stuff handling
+#
+
+#
+# validate an anchor in the grid, compare it to DNS
+# 
+# return a list of valid ids, and all the DNS keys
 #
 
 sub validateAnchor {
@@ -1023,17 +1047,7 @@ sub validateAnchor {
 #     my $keyindex = { map { md5_base64 ( $_->key() ) => $_ } $keys->answer };
 
     # THEN get the signatures, and index them by the ID
-    # and filter them by the right type
-
-    # this loop [ ] may become a generic method
-    my $sigs = querybyType( $conf , $domain , 'RRSIG' );
-
-    my $sigindex ;
-    # now find the right SIGs for our project and put them in an index
-    foreach my $rr ($sigs->answer) {
-        next unless $rr->typecovered() eq 'DNSKEY';
-        $sigindex->{ $rr->keytag() } = $rr ;
-    }
+    my $sigindex = getSigIndex( $conf , $domain );
 
     # so now compare the anchors on the grid with the keys
     # we pulled from DNS
@@ -1153,67 +1167,83 @@ sub querybyType {
     # $query is a a "Net::DNS::Packet" object
     if ( ! $rrs ) {
         # we got an error
-        logerror( "$type Search : $fqdn : " . $resolver->errorstring );
+        logerror( "$type query : $fqdn : " . $resolver->errorstring );
     }
     return $rrs ;
 }
 
 #
-# [ ] GN:DN ?
+# get all signatures for a domain, index by ID
 #
-sub validateKey {
-    my ( $conf , $domain , $id, $keyrr ) = @_ ;
-    logit("Validating key for $domain in DNS");
+# return the index
+#
 
-    my $resolver = getResolver( $conf );
+sub getSigIndex {
+    my ( $conf , $domain ) = @_ ;
 
-    logit( "Querying $domain for DNSKEY");
-    # get ALL the DNSKEYS for this domain
-    my $keys = $resolver->send($domain , "DNSKEY", "IN");
-    # $query is a a "Net::DNS::Packet" object
-    if ( ! $keys ) {
-        # we got an error
-        logerror( "DNSKEY Search : $domain : " . $resolver->errorstring );
-        return 0 ;
-    }
-    my @allkeys = $keys->answer;
+    my $sigs = querybyType( $conf , $domain , 'RRSIG' );
 
-    logit( "Querying $domain for RRSIG");
-    # get all the RRSIG stuff
-    my $sigs = $resolver->send($domain , "RRSIG", "IN");
-    if ( ! $sigs ) {
-        # we got an error
-        logerror( "RRSIG Search : $domain : " . $resolver->errorstring );
-        return 0 ;
-    }
-
-    # now find the right SIG for our project
-    my $sigrr ;
+    my $sigindex ;
+    # now find the right SIGs for our project and put them in an index
     foreach my $rr ($sigs->answer) {
         next unless $rr->typecovered() eq 'DNSKEY';
-        next unless $rr->keytag() eq $id;
-
-        # this one should match
-        $sigrr = $rr ;
-
-        print Dumper ( $rr ) if $DEBUG > 2 ;
+        $sigindex->{ $rr->keytag() } = $rr ;
     }
 
-    unless ( $sigrr ) {
-        logit( "No RRSIG for id $id found");
-        return 0;
+    return $sigindex ;
+
+}
+
+#
+# validate all keys in a domain.
+# 
+# validation requires you to get and compare ALL the keys, so you may as
+# well do it in a batch and find a way to pass back bulk results
+#
+#
+
+sub validateDomainKeys {
+    my ( $conf , $domain ) = @_ ;
+
+    logit("Validating keys for $domain in DNS");
+
+#     my $resolver = getResolver( $conf );
+
+    my $keys = querybyType( $conf , $domain , 'DNSKEY' );
+
+    return undef unless $keys ;
+    my @allkeys = $keys->answer;
+
+    # get all the signatures, indexed by id
+    my $sigindex = getSigIndex( $conf , $domain );
+
+    my $keystate = {};
+    # now walk each of the keys, and get their state
+    foreach my $keyrr ($keys->answer) {
+        # only track trust anchors
+        next unless $keyrr->sep();
+
+        my $id = $keyrr->keytag();
+        my $sigrr = $sigindex->{ $id };
+
+        unless ( $sigrr ) {
+            logit( "No RRSIG for id $id found");
+            $keystate->{$id} = 'nosig';
+            next ;
+        }
+
+        # now try and verify this signature with our orignal key
+        if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
+            $keystate->{$id} = 'valid';
+            logit( "key : $id : is valid" );
+        }
+        else {
+            $keystate->{$id} = 'error';
+            logerror( "key : $id : " . $sigrr->vrfyerrstr ) ;
+        }
     }
 
-    # now try and verify this signature with our orignal key
-    if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
-        logit( "key : $id : is valid" );
-        return 1 ;
-    }
-    else {
-        logerror( "key : $id : " . $sigrr->vrfyerrstr ) ;
-    }
-
-    return 0 ;
+    return $keystate ;
 
 }
 
@@ -1221,66 +1251,163 @@ sub checkAllKeys {
     my ( $conf ) = @_ ;
     my $resolver = getResolver( $conf );
 
-    foreach my $domain ( @{ $conf->{domains} } ) {    
-        logit( "Query keys for $domain" );
+#     # [ ] 
+#     #     we're just testing for now
+#     discoKey( $conf , 'com' , '30909' ) ;
+# 
+#     #
+#     publishKey( $conf , 'com' , '30909' );
+#
 
-        # [ ] do we continue on DNS errors, or just give up ?
+    # we have a bunch of nested loops here beaauce
+    # we're supporting lots of config levels
 
-        my $reply = $resolver->send($domain , "DNSKEY", "IN");
-        # $query is a a "Net::DNS::Packet" object
-        if ( ! $reply ) {
-            # we got an error
-            logerror( "DNSKEY Search : $domain : " . $resolver->errorstring );
+    foreach my $level ( sort keys %{ $conf->{domains} } ) {    
+        foreach my $lname ( sort keys %{ $conf->{domains}{$level} } ) {    
+            foreach my $domain ( @{ $conf->{domains}{$level}{$lname} } ) {
+                logit( "Query keys for domain : $level : $lname : $domain" );
+
+                # punt a domain to DNS, get back the state of all ids
+                my $validIDs = validateDomainKeys( $conf , $domain );
+                checkState ( $conf , {
+                    level => $level,
+                    lvlname => $lname,
+                    domain => $domain,
+                    keys => $validIDs,
+                });
+
+            }
+        }
+    }
+
+    return ;
+
+}
+
+sub checkState {
+    my ( $conf , $args ) = @_ ;
+
+    print Dumper ( (caller(0))[3] , $args ) if $DEBUG ;
+
+    my $domain = $args->{domain};
+    my $level = $args->{level};
+    my $lname = $args->{lvlname};
+
+# the statemachine
+#
+# Add Hold down time == 30 days ( 2592000 seconds )
+# Remove Hold down time == 30 days 
+#
+# Any new 'Valid' keys can be published
+# Any new 'Revoked' keys can be discoed
+# anything else is just a flag in the database
+# 
+#     The key has not or ever been seen
+# Start -> AddPend : if valid DNSKEY in RRSet with a new SEP key
+# 
+#     Wait until publishing
+# AddPend -> Start : if key in not in valid DNSKEY RRSet
+#         -> Valid : if key is in a valid RRSet after the 'add time'
+#                    and it is still valid in the rrset
+# 
+#     You can publish this key
+# Valid -> Missing : if key in not in valid DNSKEY RRSet
+#       -> Revoked : if key has "REVOKED" bit set
+# 
+#     The key went missing without being revoked (abnormal state)
+#     Continue to publish this key
+# Missing -> Valid : if key is in valid DNSKEY RRSet
+#         -> Revoked : if key has "REVOKED" bit set 
+# 
+#     DO NOT publish this key
+# Revoked -> Removed : if revoked key is not ins RREST for N? time
+# 
+#     DO NOT publish this key, and never re-publish this key
+#   Removed -> /dev/null
+# And a removed key is no-longer of concern
+
+    my $gdata = $conf->{keys}{$level}{$lname}{$domain};
+
+    foreach my $id ( keys %{ $args->{keys} } ) {
+
+        my $grec = $gdata->{$id};
+        my $kstate = $args->{keys}{$id};
+
+        # identify new keys
+        unless ( $grec ) {
+            # [ ] this key is unknown to us...
+            # send it to the pending queue
+            logit( "state : $id : start -> pending");
+            next ;
+        }
+        
+        # ignore things that don't change
+        if ( $grec->{state} eq $kstate ) {
+            logit( "state : $id : no change");
             next ;
         }
 
-        foreach my $rr ($reply->answer) {
+        # check pending keys
+        if ( $grec->{state} eq 'pending' ) {
 
-            # we only care about 'SEP' keys
-            if ( $rr->sep ) {
-                my $id = $rr->keytag() ;
+            if ( $kstate eq 'valid' ) {
+                # release from the timers
+                if ( time() > ( $grec->{time} + $conf->{holdaddtime} ) ) {
+                    logit( "state : $id : pending -> valid : offhold ");
 
-                # see if we already know about it..
-                unless ( $conf->{keys}{$domain}{$id} ) {
+                    $grec->{state} = 'valid';
 
-                    # [ ] 
-                    my $level = 'grid';
-                    addKey( $conf , {
-                        domain => $domain,
-                        id => $id,
-                        level => $level,
-                        lvlname => $level,
-                        info => "",
-                    });
+                    print Dumper ( $grec );
 
-                    $conf->{keys}{$domain}{$id}{ongrid} = 'new'
+                    updateKey( $conf , $grec );
+                    # [ ] publishKey
+
                 }
-
-                # and add the dnsinfo to the config
-                $conf->{keys}{$domain}{$id}{query} = "ok";
-                $conf->{keys}{$domain}{$id}{rr} = {
-                    flags => $rr->flags(),
-                    sep => $rr->sep(),
-                    # we need the WHOLE key for the trust anchor
-                    key => $rr->key(),
-                    # and keep an MD5 sum for repairs and regex
-                    digest => md5_base64 ( $rr->key() ),
-                    algorithm => $rr->algorithm(),
-#                     key => substr($rr->key(), -8, 8),
-                    private => $rr->privatekeyname(),
-                    tag => $rr->keytag(),
+                else {
+                    logit( "state : $id : pending -> onhold ");
                 }
-
+            }
+            else {
+                logerror( "state : $id : unknown pending -> $kstate");
             }
 
-#             print Dumper ({
-#             });
-
+            next;
         }
 
     }
 
-    print Dumper ( (caller(0))[3] , $conf->{keys} ) if $DEBUG ;
+#     print Dumper ( $args );
+
+#                 # see if we already know about it..
+#                 unless ( $conf->{keys}{$domain}{$id} ) {
+# 
+#                     # [ ] 
+#                     my $level = 'grid';
+#                     addKey( $conf , {
+#                         domain => $domain,
+#                         id => $id,
+#                         level => $level,
+#                         lvlname => $level,
+#                         info => "",
+#                     });
+# 
+#                     $conf->{keys}{$domain}{$id}{ongrid} = 'new'
+#                 }
+# 
+#                 # and add the dnsinfo to the config
+#                 $conf->{keys}{$domain}{$id}{query} = "ok";
+#                 $conf->{keys}{$domain}{$id}{rr} = {
+#                     flags => $rr->flags(),
+#                     sep => $rr->sep(),
+#                     # we need the WHOLE key for the trust anchor
+#                     key => $rr->key(),
+#                     # and keep an MD5 sum for repairs and regex
+#                     digest => md5_base64 ( $rr->key() ),
+#                     algorithm => $rr->algorithm(),
+# #                     key => substr($rr->key(), -8, 8),
+#                     private => $rr->privatekeyname(),
+#                     tag => $rr->keytag(),
+#                 }
 
 }
 
