@@ -33,6 +33,22 @@ use Net::DNS;
 use Getopt::Long qw(:config no_ignore_case auto_help);
 use Pod::Usage;
 
+my @ALGBYNUM = (
+        1=>"RSAMD5",
+        3=>"DSA",
+        5=>"RSASHA1",
+        6=>"NSEC3DSA",
+        7=>"NSEC3RSASHA1",
+        8=>"RSASHA256",
+        10=>"RSASHA512",
+#         12=>"GOST R 34.10-200",
+#         13=>"ECDSA/SHA-256",
+#         14=>"ECDSA/SHA-384",
+);
+
+my %ALGNUMLOOK = @ALGBYNUM ;
+my %ALGLOOK = reverse @ALGBYNUM ;
+
 my $GRIDMASTER ;
 my $MEMBER ;
 my $USER ;
@@ -239,6 +255,8 @@ sub addDomain {
     getSessionErrors( $session , "domain $fqdn" );
 
     # then add and the valid key as a trackable anchor
+    # we don't need the key, just the ID
+
     foreach my $id ( @{ $anchorids } ) {
         addKey( $conf , {
             domain => $domain,
@@ -428,7 +446,7 @@ sub getKeys {
 }
 
 sub getAnchors {
-    my ( $conf , $domain , $id , $info ) = @_ ;
+    my ( $conf ) = @_ ;
 
     # get all the existing trust anchors configured on the grid
     # called from loadGridConf()
@@ -446,11 +464,20 @@ sub getAnchors {
     my $data = {};
     # walk all the anchors, and index them by domain and digest
     foreach my $gkey ( @{ $gobj->dnssec_trusted_keys() } ) {
-        my $digest = md5_base64( $gkey->{key} );
-        $data->{ $gkey->fqdn() }{$digest} = $gkey ;
+
+        my $alg = getAlgorithm ( $gkey->algorithm() );
+        my $k = $gkey->key();
+        my $fq = $gkey->fqdn();
+
+        # generate a Net::DNS::RR so we can calculate the keytag
+        my $rrk = new Net::DNS::RR("$fq DNSKEY 257 3 $alg $k");
+
+        my $tag = $rrk->keytag();
+
+        $data->{ $gkey->fqdn() }{ $tag } = $gkey ;
     }
 
-    return $data ;
+    return ( $data , $gobj );
 
 }
 
@@ -613,31 +640,27 @@ sub discoKey {
         return ;
     }
 
-    # We're ok, continue to configure the grid
-    my ( $gobj ) = $session->get(
-        object => "Infoblox::Grid::DNS",
-    );
-    getSessionErrors( $session ); 
-
-    my $digest = $rdata->{digest};
-
     print Dumper ( (caller(0))[3] , $rdata ) if $DEBUG ;
 
-    # need to walk all the keys on the grid, but these have no good UID,
-    # and a regex will fail on the keystring.
-    # so md5_base64() the key, and compare it to the digest in the config
+    #
+    # In theory we already have the anchors stored in the config,
+    # but things could have changed, so we will pull them again
+    #  .. and get a ref to the grid settings
+    #
+
+    my ( $anchors , $gobj ) = getAnchors( $conf );
+
+    # now just walk this index, and remove the key we want
 
     my $newkeys = [];
 
     # [ ] this is now done at load time, we can just examine the config
-    foreach my $gkey ( @{ $gobj->dnssec_trusted_keys() } ) {
-#         my $gsum = md5_base64( $gkey->{key} );
-
-        if ( md5_base64( $gkey->{key} ) eq $rdata->{digest} ) {
-            logit( "Removing $domain $id $rdata->{digest}" );
+    foreach my $atag ( keys %{ $anchors } ) {
+        if ( $atag == $id ) {
+            logit( "Removing $domain $id" );
         }
         else {
-            push @{ $newkeys } , $gkey ;
+            push @{ $newkeys } , $anchors->{$atag} ;
         }
     }
 
@@ -955,7 +978,7 @@ sub loadGridConf {
     }
 
     # and get any existing trust anchors
-    $conf->{anchors} = getAnchors( $conf );
+    ( $conf->{anchors} ) = getAnchors( $conf );
 
     print Dumper ( (caller(0))[3] ) if $DEBUG > 1 ;
     showConfig( $conf ) if $DEBUG > 1 ;
@@ -1021,7 +1044,7 @@ sub validateAnchor {
     my ( $conf , $domain ) = @_ ;
 
     # when the config loaded, we got the current anchors from the grid
-    # and indexed them by their digest.
+    # and indexed them by their keytag.
     # so we just use that data as the bootstrap point
 
     my $anchors = $conf->{anchors}{$domain};
@@ -1032,49 +1055,47 @@ sub validateAnchor {
 
     logit("Validating existing anchors for $domain in DNS");
 
-    # We don't have the key ID for this Anchor, and the 'algorithm'
-    # string is a bit messed up, so the safest thing to do is to 
-    # query the DNS source and verify that these keys are published keys
-    # and use the ID from those published keys
+    # query the DNS source for all the keys and verify that the anchors
+    # we loaded are all published keys,
 
     my $keys = querybyType( $conf , $domain , 'DNSKEY' );
-    # now index these keys by their digest, but only keep SEP keys
+    # now index these keys by their keytag, but only keep SEP keys
     my $keyindex ;
     foreach my $krr ($keys->answer) {
         next unless $krr->sep();
-        $keyindex->{ md5_base64 ( $krr->key() ) } = $krr;
+#         $keyindex->{ md5_base64 ( $krr->keytag() ) } = $krr;
+        $keyindex->{ $krr->keytag() } = $krr;
     }
-#     my $keyindex = { map { md5_base64 ( $_->key() ) => $_ } $keys->answer };
 
-    # THEN get the signatures, and index them by the ID
-    my $sigindex = getSigIndex( $conf , $domain );
+    # THEN query the signatures, and index them by the ID
+    my $sigindex = queryAndIndexSigs( $conf , $domain );
 
     # so now compare the anchors on the grid with the keys
     # we pulled from DNS
     my $validIDs ;
     my $badkeys ;
 
-    # compare by matching the md5_base64() digest
-    foreach my $digest ( keys %{ $anchors } ) {
-        unless ( $keyindex->{$digest} ) {
+    # compare by matching the keytag
+    foreach my $id ( keys %{ $anchors } ) {
+        unless ( $keyindex->{$id} ) {
             # [ ] one bad key kinda ruins the batch
             #     (If you are adding a new domain to track)
-            logerror( "key $anchors->{$digest}{key}");
-            logerror( "Anchor : $digest : is not a published key" );
+            logerror( "Anchor : $id : $anchors->{$id}{key}");
+            logerror( "Anchor : $id : is not a published key for $domain" );
 
             $badkeys++;
             next ;
         }
 
         # otherwise this key checks out, lets double check
-        # and validate it. Since the digests match, we can use the
-        # RR in the dataset
+        # and validate it. Since the tags match, we can use the
+        # RR in the dataset from the query
         
-        my $keyrr = $keyindex->{$digest};
-        my $id = $keyrr->keytag();
+        my $keyrr = $keyindex->{$id};
+#         my $id = $keyrr->keytag();
 
         unless ( $keyrr->sep() ){
-            logerror( "Anchor : $digest is not a SEP key" );
+            logerror( "Anchor : $id is not a SEP key" );
             $badkeys++;
             next ;
         }
@@ -1082,7 +1103,7 @@ sub validateAnchor {
         # find the matching signature
         my $sigrr = $sigindex->{ $id };
         unless ( $sigrr ) {
-            logerror( "Anchor : $digest : $id : missing RRSIG" );
+            logerror( "Anchor : $id : missing RRSIG" );
             $badkeys++;
             next ;
         }
@@ -1090,11 +1111,11 @@ sub validateAnchor {
         # now try and verify this signature with our orignal key
         # and the queried keyset
         if ( $sigrr->verify( [ $keys->answer ], $keyrr ) ) {
-            logit( "Anchor : $digest : $id : is valid" );
+            logit( "Anchor : $id : is valid" );
             push @{ $validIDs } , $id ;
         }
         else {
-            logerror( "Anchor : $digest : $id : " . $sigrr->vrfyerrstr ) ;
+            logerror( "Anchor : $id : " . $sigrr->vrfyerrstr ) ;
             $badkeys++;
         }
 
@@ -1178,7 +1199,7 @@ sub querybyType {
 # return the index
 #
 
-sub getSigIndex {
+sub queryAndIndexSigs {
     my ( $conf , $domain ) = @_ ;
 
     my $sigs = querybyType( $conf , $domain , 'RRSIG' );
@@ -1215,7 +1236,7 @@ sub validateDomainKeys {
     my @allkeys = $keys->answer;
 
     # get all the signatures, indexed by id
-    my $sigindex = getSigIndex( $conf , $domain );
+    my $sigindex = queryAndIndexSigs( $conf , $domain );
 
     my $keystate = {};
     # now walk each of the keys, and get their state
@@ -1576,25 +1597,28 @@ sub logit {
 #
 
 sub getAlgorithm {
-    my ( $num ) = @_;
+    my ( $al ) = @_;
 
-    my $alook = {
-        1=>"RSAMD5",
-        3=>"DSA",
-        5=>"RSASHA1",
-        6=>"NSEC3DSA",
-        7=>"NSEC3RSASHA1",
-        8=>"RSASHA256",
-        10=>"RSASHA512",
-#         12=>"GOST R 34.10-200",
-#         13=>"ECDSA/SHA-256",
-#         14=>"ECDSA/SHA-384",
-    };
+    return $ALGNUMLOOK{$al} if $al =~ /^\d+$/;
+    return $ALGLOOK{$al} ;
 
-    return ( $alook->{$num} );
+#     print Dumper ( \%ALGLOOK , \%ALGNUMLOOK);
+# 
+#     my $alook = {
+#         1=>"RSAMD5",
+#         3=>"DSA",
+#         5=>"RSASHA1",
+#         6=>"NSEC3DSA",
+#         7=>"NSEC3RSASHA1",
+#         8=>"RSASHA256",
+#         10=>"RSASHA512",
+# #         12=>"GOST R 34.10-200",
+# #         13=>"ECDSA/SHA-256",
+# #         14=>"ECDSA/SHA-384",
+#     };
+
+#     return ( $alook->{$num} );
 }
-
-
 
 =head1 DIAGNOSTICS
 

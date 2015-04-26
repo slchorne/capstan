@@ -30,6 +30,10 @@ Design and implementation
 
 Capstan
 
+[ ] digests and tags
+    the keytag can be calcuated and used instead of the digest
+    [ ] calculate it from a netRR
+
 [ ] locking
     [ ] need to lock the script in case someone tries an admin function
         while it is processing from a cron job ?
@@ -59,20 +63,20 @@ Capstan
     [x] -k  # list all key states
     [x] --user   # add/configure the login account
 
-[ ] add a domain
+[x] add a domain
     You must bootstrap a domain with a known key
-    [ ] a key must already exist in the grid properties
-        [ ] use this key for bootstrap
-    [ ] just adds it to the tracker,
-    [ ] report existing domains as part of --init
+    [x] a key must already exist in the grid properties
+        [x] use this key for bootstrap
+    [x] just adds it to the tracker,
+    [ ] report existing domains as part of --init ?
 
 [x] need a nameserver to resolve the KSKs 
     [x] set an EA on one of the members.
 
 [ ] validation
-    [ ] a RRSIG applies to all DNSKEYS
-    [ ] validate a sig by the matching key
-    [ ] use the keytag (id) to match key <-> signature
+    [x] a RRSIG applies to all DNSKEYS
+    [x] validate a sig by the matching key
+    [x] use the keytag (id) to match key <-> signature
 
     [ ] and always validate from known KEYS only.
     [ ] never add a key that wasn't checked by a trusted key
@@ -92,7 +96,7 @@ Capstan
         [x] use storable to keep the config for the useraccount
             [-] just store the HTTP header info
 
-    [ ] store the DNS QUERY member as an EA on the member
+    [x] store the DNS QUERY member as an EA on the member
             RFC5011 == 'nameserver'
     [ ] store a managed member as an EA on the member
             RFC5011Managed == 'true'
@@ -132,13 +136,13 @@ risk someone replacing with data with bad data
     [x] only store the required fields to re-do the lookup,
         [x] key id = 33878
 
-[ ] pull any new keys added to the grid from outside this process...
-    [ ] ONLY if they are part of a tracked domain,
-        [ ] validate these keys
-    [ ] this can also be used to bootstrap a new domain
+[x] pull any new keys added to the grid from outside this process...
+    [x] ONLY if they are part of a tracked domain,
+        [x] validate these keys
+    [x] this can also be used to bootstrap a new domain
 
-[ ] we should validate the signing of the key, not just plain import it
-    [ ] need to walk the signing chain
+[x] we should validate the signing of the key, not just plain import it
+    [-] need to walk the signing chain
 
 [ ] Platform the entity will run on is LINUX.
 
