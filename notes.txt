@@ -34,6 +34,9 @@ Capstan
     the keytag can be calcuated and used instead of the digest
     [ ] calculate it from a netRR
 
+    ** [ ] if a KEY is revoked, its ID CHANGES!!
+        [ ] how do you track state then ??
+
 [ ] locking
     [ ] need to lock the script in case someone tries an admin function
         while it is processing from a cron job ?

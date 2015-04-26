@@ -1059,14 +1059,7 @@ sub validateAnchor {
     # query the DNS source for all the keys and verify that the anchors
     # we loaded are all published keys,
 
-    my $keys = querybyType( $conf , $domain , 'DNSKEY' );
-    # now index these keys by their keytag, but only keep SEP keys
-    my $keyindex ;
-    foreach my $krr ($keys->answer) {
-        next unless $krr->sep();
-#         $keyindex->{ md5_base64 ( $krr->keytag() ) } = $krr;
-        $keyindex->{ $krr->keytag() } = $krr;
-    }
+    my ( $keyindex, @allkeys ) = queryAndIndexKeys( $conf , $domain );
 
     # THEN query the signatures, and index them by the ID
     my $sigindex = queryAndIndexSigs( $conf , $domain );
@@ -1111,7 +1104,7 @@ sub validateAnchor {
 
         # now try and verify this signature with our orignal key
         # and the queried keyset
-        if ( $sigrr->verify( [ $keys->answer ], $keyrr ) ) {
+        if ( $sigrr->verify( [ @allkeys ], $keyrr ) ) {
             logit( "Anchor : $id : is valid" );
             push @{ $validIDs } , $id ;
         }
@@ -1171,14 +1164,39 @@ sub addKeyRRsToConfig {
     }
 }
 
-
-
+#
+# Net::DNS operations
 #
 
+sub getResolver {
+    my ( $conf ) = @_ ;
+
+    return undef unless $conf->{nameserver};
+
+    # uses fancy ref caching..
+    return $conf->{resolver} if $conf->{resolver} ;
+
+    # and local hacks
+    my $ns = $XRES ? $XRES : $conf->{nameserver};
+
+    logit ( "Sending DNS queries to $ns");
+
+    my $res = Net::DNS::Resolver->new;
+    $res->nameservers( $ns );
+    $res->tcp_timeout(10);
+    $res->udp_timeout(5);
+
+    # and cache it
+    $conf->{resolver} = $res ;
+
+    return ( $res ) ;
+}
+
 #
-# Generic DNS loopup operation
+# Generic DNS loopup operations
 # DNS lookup with error checking, returns Net::DNS::Packet" object
 #
+
 sub querybyType {
     my ( $conf , $fqdn , $type ) = @_ ;
     my $resolver = getResolver( $conf );
@@ -1192,6 +1210,28 @@ sub querybyType {
         logerror( "$type query : $fqdn : " . $resolver->errorstring );
     }
     return $rrs ;
+}
+
+
+#
+# get all keys for a domain, index by ID
+#
+# return the and index of SEP keys, and all the keys
+#
+
+sub queryAndIndexKeys {
+    my ( $conf , $domain ) = @_ ;
+    my $keys = querybyType( $conf , $domain , 'DNSKEY' );
+
+    # now index these keys by their keytag, but only keep SEP keys
+    my $keyindex ;
+    foreach my $krr ($keys->answer) {
+        next unless $krr->sep();
+#         $keyindex->{ md5_base64 ( $krr->keytag() ) } = $krr;
+        $keyindex->{ $krr->keytag() } = $krr;
+    }
+
+    return ( $keyindex , $keys->answer );
 }
 
 #
@@ -1229,19 +1269,16 @@ sub validateDomainKeys {
 
     logit("Validating keys for $domain in DNS");
 
-#     my $resolver = getResolver( $conf );
+    my ( $idx, @allkeys ) = queryAndIndexKeys( $conf , $domain );
 
-    my $keys = querybyType( $conf , $domain , 'DNSKEY' );
-
-    return undef unless $keys ;
-    my @allkeys = $keys->answer;
+    return undef unless @allkeys ;
 
     # get all the signatures, indexed by id
     my $sigindex = queryAndIndexSigs( $conf , $domain );
 
     my $keystate = {};
     # now walk each of the keys, and get their state
-    foreach my $keyrr ($keys->answer) {
+    foreach my $keyrr ( @allkeys ) {
         # only track trust anchors
         next unless $keyrr->sep();
 
@@ -1489,31 +1526,6 @@ sub checkState {
 
 }
 
-sub getResolver {
-    my ( $conf ) = @_ ;
-
-    return undef unless $conf->{nameserver};
-
-    # uses fancy ref caching..
-    return $conf->{resolver} if $conf->{resolver} ;
-
-    # and local hacks
-    my $ns = $XRES ? $XRES : $conf->{nameserver};
-
-    logit ( "Sending DNS queries to $ns");
-
-    my $res = Net::DNS::Resolver->new;
-    $res->nameservers( $ns );
-    $res->tcp_timeout(10);
-    $res->udp_timeout(5);
-
-    # and cache it
-    $conf->{resolver} = $res ;
-
-    return ( $res ) ;
-}
-
-
 #
 # session handling
 #
@@ -1627,6 +1639,19 @@ sub setAttributes {
 }
 
 #
+# PAPI 
+# lookup algorithm, coz we don't support all numbers, grr
+#
+
+sub getAlgorithm {
+    my ( $al ) = @_;
+
+    return $ALGNUMLOOK{$al} if $al =~ /^\d+$/;
+    return $ALGLOOK{$al} ;
+
+}
+
+#
 # logging
 #
 
@@ -1647,34 +1672,6 @@ sub logit {
 
     # ALL mesages come here, where we add a timestamp
     print localtime() . " : $level : $message\n";
-}
-
-#
-# lookup algorithm, coz we don't support all numbers, grr
-#
-
-sub getAlgorithm {
-    my ( $al ) = @_;
-
-    return $ALGNUMLOOK{$al} if $al =~ /^\d+$/;
-    return $ALGLOOK{$al} ;
-
-#     print Dumper ( \%ALGLOOK , \%ALGNUMLOOK);
-# 
-#     my $alook = {
-#         1=>"RSAMD5",
-#         3=>"DSA",
-#         5=>"RSASHA1",
-#         6=>"NSEC3DSA",
-#         7=>"NSEC3RSASHA1",
-#         8=>"RSASHA256",
-#         10=>"RSASHA512",
-# #         12=>"GOST R 34.10-200",
-# #         13=>"ECDSA/SHA-256",
-# #         14=>"ECDSA/SHA-384",
-#     };
-
-#     return ( $alook->{$num} );
 }
 
 =head1 DIAGNOSTICS
@@ -1728,3 +1725,76 @@ No bugs have been reported. Yet.
 Copyright (c) 2015, Geoff Horne, SLC . All rights reserved.
 
 =cut
+
+####################################################
+
+sub fakedns {
+
+#                 ) ; key id = 9795
+    my $ak = '
+    DNSKEY 257 3 7 (
+        AwEAAZTjbIO5kIpxWUtyXc8avsKyHIIZ+LjC2Dv8naO+
+        Tz6X2fqzDC1bdq7HlZwtkaqTkMVVJ+8gE9FIreGJ4c8G
+        1GdbjQgbP1OyYIG7OHTc4hv5T2NlyWr6k6QFz98Q4zwF
+        IGTFVvwBhmrMDYsOTtXakK6QwHovA1+83BsUACxlidpw
+        B0hQacbD6x+I2RCDzYuTzj64Jv0/9XsX6AYV3ebcgn4h
+        L1jIR2eJYyXlrAoWxdzxcW//5yeL5RVWuhRxejmnSVnC
+        uxkfS4AQ485KH2tpdbWcCopLJZs6tw8q3jWcpTGzdh/v
+        3xdYfNpQNcPImFlxAun3BtORPA2r8ti6MNoJEHU=
+    ';
+
+
+#                 ) ; key id = 21366
+    my $kd = '
+    DNSKEY 257 3 7
+        AwEAAYpYfj3aaRzzkxWQqMdl7YExY81NdYSv+qayuZDo
+        dnZ9IMh0bwMcYaVUdzNAbVeJ8gd6jq1sR3VvP/SR36mm
+        GssbV4Udl5ORDtqiZP2TDNDHxEnKKTX+jWfytZeT7d3A
+        bSzBKC0v7uZrM6M2eoJnl6id66rEUmQC2p9DrrDg9F6t
+        XC9CD/zC7/y+BNNpiOdnM5DXk7HhZm7ra9E7ltL13h2m
+        x7kEgU8e6npJlCoXjraIBgUDthYs48W/sdTDLu7N59rj
+        CG+bpil+c8oZ9f7NR3qmSTpTP1m86RqUQnVErifrH8Kj
+        DqL+3wzUdF5ACkYwt1XhPVPU+wSIlzbaAQN49PU=
+    ';
+
+    my $keyrr = new Net::DNS::RR("org $kd");
+
+    print Dumper ( $keyrr->keytag() , $keyrr->keyid );
+
+    $keyrr->revoke(1);
+
+    print Dumper ( $keyrr->keytag() , $keyrr->keyid );
+
+}
+
+#
+# NET::DNS extensions
+#
+
+package Net::DNS::RR::DNSKEY ;
+
+#
+# calculates a keytag that ignores the flags,
+# so it always returns the same value for the same key
+#
+# requires $keyrr->keybin();
+#
+# a re-write of Net::DNS::RR::DNSKEY->keytag()
+#
+
+sub keyid {
+    my $self = shift ;
+
+    return $self->{keyid} = do {
+#         my @kp = @{$self}{qw(flags protocol algorithm)};
+        my @kp = ( 0 , 0 , 0 );
+        my $kb = $self->{keybin} || return 0;
+        my $od = length($kb) & 1;
+        my $ac = 0;
+        $ac += $_ for unpack 'n*', pack "n C2 a* x$od", @kp, $kb;
+        $ac += ( $ac >> 16 );
+        $ac & 0xFFFF;
+    }
+
+}
+
