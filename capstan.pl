@@ -467,14 +467,14 @@ sub getAnchors {
 
         my $alg = getAlgorithm ( $gkey->algorithm() );
         my $k = $gkey->key();
-        my $fq = $gkey->fqdn();
+        my $domain = $gkey->fqdn();
 
         # generate a Net::DNS::RR so we can calculate the keytag
-        my $rrk = new Net::DNS::RR("$fq DNSKEY 257 3 $alg $k");
+        my $keyrr = new Net::DNS::RR("$domain DNSKEY 257 3 $alg $k");
 
-        my $tag = $rrk->keytag();
+        my $tag = $keyrr->keytag();
 
-        $data->{ $gkey->fqdn() }{ $tag } = $gkey ;
+        $data->{ $domain }{ $tag } = $gkey ;
     }
 
     return ( $data , $gobj );
@@ -1245,6 +1245,13 @@ sub validateDomainKeys {
         next unless $keyrr->sep();
 
         my $id = $keyrr->keytag();
+
+        if ( $keyrr->revoke() ) {
+            logit( "key : $id : revoked" );
+            $keystate->{$id} = 'revoked';
+            next ;
+        }
+
         my $sigrr = $sigindex->{ $id };
 
         unless ( $sigrr ) {
@@ -1252,6 +1259,8 @@ sub validateDomainKeys {
             $keystate->{$id} = 'nosig';
             next ;
         }
+
+        # [ ] is a revoked key valid ??
 
         # now try and verify this signature with our orignal key
         if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
@@ -1290,6 +1299,7 @@ sub checkAllKeys {
 
                 # punt a domain to DNS, get back the state of all ids
                 my $validIDs = validateDomainKeys( $conf , $domain );
+
                 checkState ( $conf , {
                     level => $level,
                     lvlname => $lname,
@@ -1305,6 +1315,10 @@ sub checkAllKeys {
 
 }
 
+#
+# compare the state of a set of key IDs with what we have in our config
+#
+
 sub checkState {
     my ( $conf , $args ) = @_ ;
 
@@ -1313,6 +1327,7 @@ sub checkState {
     my $domain = $args->{domain};
     my $level = $args->{level};
     my $lname = $args->{lvlname};
+    my $validKeyIDs = $args->{keys};
 
 # the statemachine
 #
@@ -1341,18 +1356,23 @@ sub checkState {
 #         -> Revoked : if key has "REVOKED" bit set 
 # 
 #     DO NOT publish this key
-# Revoked -> Removed : if revoked key is not ins RREST for N? time
+# Revoked -> Removed : if revoked key is not in RRSet for 30 days
 # 
 #     DO NOT publish this key, and never re-publish this key
+#     remove it from the database 30 days after it was 'removed'
 #   Removed -> /dev/null
 # And a removed key is no-longer of concern
 
     my $gdata = $conf->{keys}{$level}{$lname}{$domain};
 
-    foreach my $id ( keys %{ $args->{keys} } ) {
+    # [ ] walk the keys we found,
+    # [ ] then walk any dangling keys on the grid
+
+    # $validKeyIDs is a HASHREF with the state for each ID
+    foreach my $id ( keys %{ $validKeyIDs } ) {
 
         my $grec = $gdata->{$id};
-        my $kstate = $args->{keys}{$id};
+        my $kstate = $validKeyIDs->{$id};
 
         # identify new keys
         unless ( $grec ) {
@@ -1368,16 +1388,27 @@ sub checkState {
             next ;
         }
 
+        # cache some expire timers
+        my $addendtime = $grec->{time} + $conf->{holdaddtime};
+        my $remendtime = $grec->{time} + $conf->{holdremtime};
+
+        # N: we are always comparing:
+        #     LAST KNOWN STATE <=> Current state
+
+        # revoked and removed keys may not be in the $validKeyIDs
+        # we need to identify them some other way..
+
         # check pending keys
         if ( $grec->{state} eq 'pending' ) {
 
             if ( $kstate eq 'valid' ) {
                 # release from the timers
-                if ( time() > ( $grec->{time} + $conf->{holdaddtime} ) ) {
-                    logit( "state : $id : pending -> valid : offhold ");
+                if ( time() > $addendtime ) {
+                    logit( "state : $id : pending -> valid : offhold");
 
                     $grec->{state} = 'valid';
 
+#                     print Dumper ( $grec ) if $DEBUG > 1 ;
                     print Dumper ( $grec );
 
                     updateKey( $conf , $grec );
@@ -1385,7 +1416,7 @@ sub checkState {
 
                 }
                 else {
-                    logit( "state : $id : pending -> onhold ");
+                    logit( "state : $id : pending -> onhold");
                 }
             }
             else {
@@ -1394,6 +1425,22 @@ sub checkState {
 
             next;
         }
+
+#         if ( $grec->{state} eq 'revoked' ) {
+#             # just remove it as a trust anchor
+#                 if ( time() > $remendtime ) {
+#                     logit( "state : $id : revoked -> removed");
+#                     # [ ] update this RR
+#                 }
+#         }
+
+#         if ( $grec->{state} eq 'removed' ) {
+#                 if ( time() > $remendtime ) {
+#                     logit( "state : $id : removed -> trash");
+#                     # [ ] delete this RR
+#                 }
+#         }
+# 
 
     }
 
