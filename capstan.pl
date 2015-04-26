@@ -258,7 +258,8 @@ sub addDomain {
     logit( "Adding tracking domain $domain");
 
     my $level = 'grid';
-    my $fqdn = join ( "." , $domain , $level , $conf->{zone} );
+    my $levelname = 'default';
+    my $fqdn = join ( "." , $domain , $levelname , $level , $conf->{zone} );
 
     my $tobj = Infoblox::DNS::Record::TXT->new(
         name => $fqdn,
@@ -266,7 +267,7 @@ sub addDomain {
         comment => $AUTOCOMM,
         extensible_attributes => { 
             RFC5011Level => $level,
-            RFC5011Name => $level,
+            RFC5011Name => $levelname,
             RFC5011Type => 'domain' 
         },
     );
@@ -280,7 +281,7 @@ sub addDomain {
             domain => $domain,
             id => $id,
             level => $level,
-            location => $level,
+            lvlname => $levelname,
             state => 'valid',
             info => "",
         });
@@ -303,7 +304,7 @@ sub addDomain {
             domain => $domain,
             id => $id,
             level => $level,
-            location => $level,
+            lvlname => $levelname,
             state => 'pending',
 #             info => "",
         });
@@ -332,7 +333,8 @@ sub delDomain {
 
     # remove the domain to be tracked
     my $level = 'grid';
-    my $parent = join ( "." , $domain , $level , $conf->{zone} );
+    my $levelname = 'default';
+    my $parent = join ( "." , $domain , $levelname , $level , $conf->{zone} );
 
     logit( "Deleting tracking domain $domain");
 
@@ -493,7 +495,7 @@ sub addKey {
     my $id = $rec->{id};
     my $domain = $rec->{domain};
     my $level = $rec->{level} || 'grid' ;
-    my $location = $rec->{location} || 'grid' ;
+    my $lvlname = $rec->{lvlname} || 'default' ;
     my $state = $rec->{state} || 'start' ;
     my $info = $rec->{info};
 
@@ -502,7 +504,8 @@ sub addKey {
     return unless $session ;
 
     # add the domain to be tracked
-    my $fqdn = join ( "." , $id , 'key' , $domain , $level , $conf->{zone} );
+    my $fqdn = join ( "." , $id , 'key' , $domain , $lvlname , 
+                            $level , $conf->{zone} );
 
     # add the tracking zone
     logit( "Adding key $id for $domain as $state");
@@ -515,7 +518,7 @@ sub addKey {
             RFC5011Time => time(),
             RFC5011State => $state,
             RFC5011Level => $level,
-            RFC5011Name => $location,
+            RFC5011Name => $lvlname,
             RFC5011Type => 'key' 
         },
     );
@@ -788,36 +791,7 @@ sub listKeys {
 #     }
 #     print "\n";
 
-    my @k = traverseKeys( $conf , "", 'keys' );
-#     my @k = traverseKeys( $conf->{keys} , "", keys %{ $conf->{keys} } );
-    print Dumper ( \@k );
-
     return 1;
-}
-
-# functional code, only ever pass singletons
-sub traverseKeys {
-    # note the implicit shift of the array
-    my ( $rec , $path , $val , @keys ) = @_;
-
-    # bubble up an array
-    my @res ;
-
-    # across
-    push @res , traverseKeys( $rec , $path , @keys ) if @keys ;
-
-    my $newpath = $path ? "$path : $val" : $val ;
-
-    # exit condition
-    return "$newpath" if $val =~ /\d/;
-
-    # down
-    push @res , traverseKeys( $rec->{$val} , "$newpath",
-                    keys %{ $rec->{$val} } ) 
-            if $rec->{$val} =~/HASH/ ;
-
-    return @res ;
-
 }
 
 #
@@ -1275,7 +1249,7 @@ sub checkAllKeys {
                         domain => $domain,
                         id => $id,
                         level => $level,
-                        location => $level,
+                        lvlname => $level,
                         info => "",
                     });
 
