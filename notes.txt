@@ -1,5 +1,4 @@
 
-
 Overview:
 
 The objective is to get valid 'Trust Anchors' into the
@@ -15,14 +14,14 @@ And thus used by the resolver component of the nameserver
 As per the spec it Should only manage anchors for known trust points and
 only for keys that have the SEP bit set
 
-Speaking to Ulf Ekberg, fron the BIND/Eng side of things:
+Speaking to Ulf Ekberg @infoblox.com, from the BIND/Eng side of things:
 
 If we check everything every hour we are well within any hold-down timers
 and revocation timers, so there is no need for an adavnced TTL monitor,
 just re-check everything 1/hour
 
 You can't add a domain to trust unless you also provide a key for that
-domain, this MUSt be an out of band operation to bootstrap the process.
+domain, this MUST be an out of band operation to bootstrap the process.
 This key will also be used to validate any new keys
 
 -----------------------------------
@@ -30,12 +29,16 @@ Design and implementation
 
 Capstan
 
-[ ] digests and tags
-    the keytag can be calcuated and used instead of the digest
-    [ ] calculate it from a netRR
+[ ] publish to github
 
-    ** [ ] if a KEY is revoked, its ID CHANGES!!
-        [ ] how do you track state then ??
+[x] digests and tags
+    the keytag could be calcuated and used instead of the digest
+    But the tag changes if the key is revoked (as it's calculated from
+    the flags.
+
+    [x] use a variation of the one defined in RFC4034
+    Appendix B, with the 'flags','protocol' and 'algorithm' are all set
+    to 0.
 
 [ ] locking
     [ ] need to lock the script in case someone tries an admin function
@@ -71,7 +74,9 @@ Capstan
     [x] a key must already exist in the grid properties
         [x] use this key for bootstrap
     [x] just adds it to the tracker,
-    [ ] report existing domains as part of --init ?
+
+    [-] report discovered domains as part of --init ?
+        Nah, just use '-l'
 
 [x] need a nameserver to resolve the KSKs 
     [x] set an EA on one of the members.
@@ -84,8 +89,9 @@ Capstan
     [ ] and always validate from known KEYS only.
     [ ] never add a key that wasn't checked by a trusted key
 
-[ ] grid or MEMBER level anchors, not views
-    [ ] how to set the location ?
+[ ] grid or MEMBER level anchors, not views ?
+    [x] how to set the location ?
+        EAs, and insert into the TXT FQDN
 
 [-] REST API ? 
     NOT supported for trust anchors, need to use PAPI.
@@ -130,7 +136,7 @@ Capstan
 
     [x] auto-configure the zone on init, first run
 
-    [ ] only store the active keys on the grid,
+    [x] only store the active trust anchors on the grid,
         put the rest of the config into the zone
 
 [x] re-verify any of the records when reading from the file, so you don't
@@ -147,10 +153,9 @@ risk someone replacing with data with bad data
 [x] we should validate the signing of the key, not just plain import it
     [-] need to walk the signing chain
 
-[ ] Platform the entity will run on is LINUX.
+[ ] CRON or Daemon ?
+    [ ] document the CRON setup
 
-[ ] CRON or Daemon
-    [ ] Periodic intervals for running the script is OK for T-Systems.
     [ ] Run as a cron job at a fine grained period.
         smaller than the window of the sleep timers
         smaller than the window of the revocation windows
@@ -159,49 +164,13 @@ risk someone replacing with data with bad data
         interval should be one hour in order to conform to the RFC"
 
 [ ] pending keys get stored in the dataset until they are considered valid
-    [ ] just follow the rules of the statemachine
+    [x] just follow the rules of the statemachine
 
 [ ] revoking keys - 
     [ ] a revoked key must still be in the signed list
         ( as this is how the owner verifies this key )
-        [ ] revoked mey must pass validation
-    [ ] check statemachine for revokation rules
+        [ ] revoked key must pass validation
+    [x] check statemachine for revokation rules
 
 [-] can't use a pure-perl net::dns::sec - will be platform dependent. ?
-
-------------
-General notes:
-
-What they want is something like trustMan: ?
-
-https://www.dnssec-tools.org/wiki/index.php/Trustman 
-
-[x] do we care about pending keys ? Is this something that we can rely on
-from bind ? If the key appears, then disappears later, who cares, the
-entity will just add/remove it right ?
-    [x] or is this related to the 'bad key' injection problem ?
-    [x] yes, since you can't really trust the nameserver chain of query
-
-Validation works because you have to SIGN the WHOLE RRset.
-
-So if you have a set or keys A,B
-and if someone adds a new key, C they can sign the whole NEW set [a,b,c]
-and produce a valid signature.
-
-But the other signature for the same rrset, won't contain C, it will only
-contain [a,b] and the signature will fail when we try and validate
-[a,b,c].
-
-And the new key can never be signed by the old key, because they don't
-have the private key to sign it
-
-the problem, thus, is that the INVALID key, may be the GOOD key, (because
-the RRSet is invalid) so you have to invalidate ALL keys.
-
-BUT - what do you do then ? Stop trusting the zone ?
-
-BUT - what if the old sig is missing from the rrset ?
-BUT - what if the rrset just has whole new keys and sigs ?
-
-
 
