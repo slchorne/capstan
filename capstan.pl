@@ -224,6 +224,7 @@ sub addDomain {
     # adding a domain requires using an existing trust anchor
     # so we just use the config to query the grid and DNS
     # and return any valid anchors for this domain as a list of IDs
+    # and additonal keys
 
     my ( $anchorids , @keys ) = validateAnchor( $conf , $domain );
 
@@ -254,43 +255,36 @@ sub addDomain {
     $session->add( $tobj );
     getSessionErrors( $session , "domain $fqdn" );
 
-    # then add and the valid key as a trackable anchor
-    # we don't need the key, just the ID
+    # we now have a list of valid keys, and a list of keytags
+    # for keys (anchors) that we already know about.
+    #
+    # So walk ALL the keys and just decide if they are
+    # valid or pending
 
-    foreach my $id ( @{ $anchorids } ) {
-        addKey( $conf , {
-            domain => $domain,
-            id => $id,
-            level => $level,
-            lvlname => $levelname,
-            state => 'valid',
-            info => "",
-        });
-
-    }
-
-    # lastly add any OTHER keys for this domain as pending
-    # we can throw away the query data after this, because we will
-    # do another query if we need to later.
-
-    # we have 2 lists here, so there is no cleaner way to do this
-
-    logit( "Adding additional keys from domain $domain");
     foreach my $rr ( @keys ) {
+        # generate a non-changing ID
         my $id = $rr->keytag() ;
-        
-        next if ( grep ( /^$id$/ , @{ $anchorids } ) );
+        my $gridid = $rr->keyid() ;
 
-        addKey( $conf , {
+        my $rec = {
             domain => $domain,
             id => $id,
+            gid => $gridid,
             level => $level,
             lvlname => $levelname,
             state => 'pending',
-#             info => "",
-        });
+        };
+        
+        if ( grep ( /^$id$/ , @{ $anchorids } ) ) {
+            $rec->{state} = 'valid',
+        }
+
+        addKey( $conf , $rec );
 
     }
+
+    # we can also throw away the query data after this, because we will
+    # do another query if we need to later.
 
     return 1 ;
 
@@ -469,12 +463,12 @@ sub getAnchors {
         my $k = $gkey->key();
         my $domain = $gkey->fqdn();
 
-        # generate a Net::DNS::RR so we can calculate the keytag
+        # generate a Net::DNS::RR so we can calculate the keyid
         my $keyrr = new Net::DNS::RR("$domain DNSKEY 257 3 $alg $k");
 
-        my $tag = $keyrr->keytag();
+        my $id = $keyrr->keytag();
 
-        $data->{ $domain }{ $tag } = $gkey ;
+        $data->{ $domain }{ $id } = $gkey ;
     }
 
     return ( $data , $gobj );
@@ -490,6 +484,7 @@ sub addKey {
     # we have to set some defaults of the PAII will choke on
     # invalid/blank EA values
     my $id = $rec->{id};
+    my $gid = $rec->{gid};
     my $domain = $rec->{domain};
     my $level = $rec->{level} || 'grid' ;
     my $lvlname = $rec->{lvlname} || 'default' ;
@@ -501,11 +496,11 @@ sub addKey {
     return unless $session ;
 
     # add the domain to be tracked
-    my $fqdn = join ( "." , $id , 'key' , $domain , $lvlname , 
+    my $fqdn = join ( "." , $gid , 'key' , $domain , $lvlname , 
                             $level , $conf->{zone} );
 
     # add the tracking zone
-    logit( "Adding key $id for $domain as $state");
+    logit( "Adding key $gid ($id) for $domain as $state");
 
     my $tobj = Infoblox::DNS::Record::TXT->new(
         name => $fqdn,
@@ -580,7 +575,7 @@ sub updateKey {
 sub publishKey {
     my ( $conf , $domain , $keyrr ) = @_ ;
 
-    my $id = $keyrr->keytag();
+    my $id = $keyrr->keyid();
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
@@ -1045,7 +1040,7 @@ sub validateAnchor {
     my ( $conf , $domain ) = @_ ;
 
     # when the config loaded, we got the current anchors from the grid
-    # and indexed them by their keytag.
+    # and indexed them by their keyid.
     # so we just use that data as the bootstrap point
 
     my $anchors = $conf->{anchors}{$domain};
@@ -1069,7 +1064,7 @@ sub validateAnchor {
     my $validIDs ;
     my $badkeys ;
 
-    # compare by matching the keytag
+    # compare by matching the keyid
     foreach my $id ( keys %{ $anchors } ) {
         unless ( $keyindex->{$id} ) {
             # [ ] one bad key kinda ruins the batch
@@ -1086,7 +1081,7 @@ sub validateAnchor {
         # RR in the dataset from the query
         
         my $keyrr = $keyindex->{$id};
-#         my $id = $keyrr->keytag();
+#         my $id = $keyrr->keyid();
 
         unless ( $keyrr->sep() ){
             logerror( "Anchor : $id is not a SEP key" );
@@ -1143,7 +1138,7 @@ sub addKeyRRsToConfig {
 
     foreach my $rr ( @rrlist ) {
 
-        my $id = $rr->keytag() ;
+        my $id = $rr->keyid() ;
 
 #         # and add the dnsinfo to the config
 #         $conf->{keys}{$domain}{$id}{state} = $state,
@@ -1158,7 +1153,7 @@ sub addKeyRRsToConfig {
 #             algorithm => $rr->algorithm(),
 # #                     key => substr($rr->key(), -8, 8),
 #             private => $rr->privatekeyname(),
-#             tag => $rr->keytag(),
+#             tag => $rr->keyid(),
 #         }
 
     }
@@ -1223,11 +1218,11 @@ sub queryAndIndexKeys {
     my ( $conf , $domain ) = @_ ;
     my $keys = querybyType( $conf , $domain , 'DNSKEY' );
 
-    # now index these keys by their keytag, but only keep SEP keys
+    # now index these keys by their keyid, but only keep SEP keys
     my $keyindex ;
     foreach my $krr ($keys->answer) {
         next unless $krr->sep();
-#         $keyindex->{ md5_base64 ( $krr->keytag() ) } = $krr;
+#         $keyindex->{ $krr->keyid() } = $krr;
         $keyindex->{ $krr->keytag() } = $krr;
     }
 
@@ -1277,7 +1272,7 @@ sub validateDomainKeys {
     my $sigindex = queryAndIndexSigs( $conf , $domain );
 
     my $keystate = {};
-    # now walk each of the keys, and get their state
+    # now walk ALL of the keys, and verify them
     foreach my $keyrr ( @allkeys ) {
         # only track trust anchors
         next unless $keyrr->sep();
@@ -1373,7 +1368,6 @@ sub checkState {
     my $domain = $args->{domain};
     my $level = $args->{level};
     my $lname = $args->{lvlname};
-    my $validKeyIDs = $args->{keys};
 
 # the statemachine
 #
@@ -1411,11 +1405,20 @@ sub checkState {
 
     my $gdata = $conf->{keys}{$level}{$lname}{$domain};
 
-    # [ ] walk the keys we found,
-    # [ ] then walk any dangling keys on the grid
+    # a keytag could have changed if it was revoked, so we have to
+    # create a new index of the keys based on their 'keyid'
 
-    # $validKeyIDs is a HASHREF with the state for each ID
+    my $validKeyIDs = { map { $_->{rdata}->keyid => $_ } 
+            values %{ $args->{keys} } };
+
+    # $validKeyIDs is now a HASHREF with the state for each ID
     # and the Net::DNS::RR::DNSKEY record
+
+    # [ ] we should walk the keys we know about (on the grid)
+    #    since this is the last KNOWN state
+    # and compare them to the keys we just queried
+
+
     foreach my $id ( keys %{ $validKeyIDs } ) {
 
         my $grec = $gdata->{$id};
@@ -1491,6 +1494,8 @@ sub checkState {
 
     }
 
+    # [ ] then walk any dangling keys on the grid
+
 #     print Dumper ( $args );
 
 #                 # see if we already know about it..
@@ -1521,7 +1526,7 @@ sub checkState {
 #                     algorithm => $rr->algorithm(),
 # #                     key => substr($rr->key(), -8, 8),
 #                     private => $rr->privatekeyname(),
-#                     tag => $rr->keytag(),
+#                     tag => $rr->keyid(),
 #                 }
 
 }
