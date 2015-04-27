@@ -192,10 +192,6 @@ listKeys( $conf ) && exit if $LISTKEYS ;
 # Main statemachine :
 #
 
-# Step 1 , compare all keys on the grid to all keys in DNS,
-#   and update the state of anything that changes
-#
-
 checkAllKeys( $conf );
 
 
@@ -377,7 +373,7 @@ sub addKey {
 
     my $tobj = Infoblox::DNS::Record::TXT->new(
         name => $fqdn,
-        text => "domain:$domain id:$id loc:$level",
+        text => "domain:$domain tag:$id loc:$level",
         comment => $AUTOCOMM,
         extensible_attributes => { 
             RFC5011Time => time(),
@@ -405,17 +401,19 @@ sub updateKey {
     my $session = startSession( $conf );  
     return unless $session ;
 
+    my $tag = $rec->{id};
+
     # add the domain to be tracked
-    my $fqdn = join ( "." , $rec->{id}, 'key',
+    my $fqdn = join ( "." , $rec->{gid}, 'key',
         $rec->{domain},
         $rec->{lvlname},
         $rec->{level},
         $conf->{zone} );
 
     # add the tracking zone
-    logit( "modify key : $rec->{id} : $fqdn : $rec->{state}");
+    logit( "modify key : $rec->{gid} : $fqdn : $rec->{state}");
 
-    my ( $tobj ) = $session->search(
+    my ( $tobj ) = $session->get(
         object => "Infoblox::DNS::Record::TXT",
         name => $fqdn,
 #         zone => $conf->{zone},
@@ -423,12 +421,52 @@ sub updateKey {
     );
     getSessionErrors( $session , "modify key" ) if $DEBUG ;
 
+    return unless $tobj ;
+
+    $tobj->text( "domain:$rec->{domain} tag:$tag loc:$rec->{level}" );
     my $exts = $tobj->extensible_attributes();
     $exts->{RFC5011Time} = time() ;
     $exts->{RFC5011State} = $rec->{state} ;
     $tobj->extensible_attributes( $exts );
 
     $session->modify( $tobj );
+    getSessionErrors( $session ); 
+
+    return 1 ;
+
+}
+
+#
+# delete a key
+#
+sub removeKey {
+    my ( $conf , $rec ) = @_ ;
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    # add the domain to be tracked
+    my $fqdn = join ( "." , $rec->{gid}, 'key',
+        $rec->{domain},
+        $rec->{lvlname},
+        $rec->{level},
+        $conf->{zone} );
+
+    # add the tracking zone
+    logit( "remove key : $rec->{gid} : $fqdn : $rec->{state}");
+
+    my ( $tobj ) = $session->get(
+        object => "Infoblox::DNS::Record::TXT",
+        name => $fqdn,
+#         zone => $conf->{zone},
+#         extensible_attributes => { RFC5011Type => { value => "key" } }
+    );
+    getSessionErrors( $session , "remove key" ) if $DEBUG ;
+
+    return unless $tobj ;
+
+    $session->remove( $tobj );
     getSessionErrors( $session ); 
 
     return 1 ;
@@ -456,11 +494,12 @@ sub publishKey {
 
     logit( "Trusting key $id for $domain");
 
-    # We're ok, continue to configure the grid
-    my ( $gobj ) = $session->get(
-        object => "Infoblox::Grid::DNS",
-    );
-    getSessionErrors( $session ); 
+    #
+    # avoid race conditions with the config, and 
+    # just call getAnchors();
+    my ( $anchors , $gobj ) = getAnchors( $conf );
+
+    return undef unless $gobj ;
 
     my $gridkeys = $gobj->dnssec_trusted_keys();
 
@@ -483,7 +522,7 @@ sub publishKey {
     $gobj->dnssec_trusted_keys( $gridkeys );
 
     $session->modify( $gobj );
-    getSessionErrors( $session ); 
+    getSessionErrors( $session , "publishKey : modify Infoblox::Grid::DNS"); 
 
     return 1 ;
 
@@ -494,27 +533,24 @@ sub publishKey {
 #   disco(ontinue)Key
 # 
 sub discoKey {
-    my ( $conf , $domain , $id , $info ) = @_ ;
+    my ( $conf , $domain , $keyrr ) = @_ ;
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
     return unless $session ;
 
+    my $id = $keyrr->keytag();
+
     logit( "UnTrusting key $id for $domain");
 
-    # get the config for this key we want to remove
-    my $rdata = $conf->{keys}{$domain}{$id}{rr};
-    unless ( $rdata ) {
-        logerror( "rdata for key $id was not found" );
-        return ;
-    }
-
-    print Dumper ( (caller(0))[3] , $rdata ) if $DEBUG ;
+    print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
 
     #
-    # In theory we already have the anchors stored in the config,
-    # but things could have changed, so we will pull them again
-    #  .. and get a ref to the grid settings
+    # we can't use the anchors in the config, we may have added an anchor
+    # in a previous statemachine loop and shouldn't trust the config for
+    # avoiding race conditions.
+    #
+    # So just pull them again from the grid
     #
 
     my ( $anchors , $gobj ) = getAnchors( $conf );
@@ -523,7 +559,6 @@ sub discoKey {
 
     my $newkeys = [];
 
-    # [ ] this is now done at load time, we can just examine the config
     foreach my $atag ( keys %{ $anchors } ) {
         if ( $atag == $id ) {
             logit( "Removing $domain $id" );
@@ -536,7 +571,7 @@ sub discoKey {
     $gobj->dnssec_trusted_keys( $newkeys );
 
     $session->modify( $gobj );
-    getSessionErrors( $session ); 
+    getSessionErrors( $session , "discokey : modify Infoblox::Grid::DNS"); 
 
     return 1 ;
 
@@ -910,14 +945,6 @@ sub checkAllKeys {
     my ( $conf ) = @_ ;
     my $resolver = getResolver( $conf );
 
-#     # [ ] 
-#     #     we're just testing for now
-#     discoKey( $conf , 'com' , $keyrr  ) ;
-# 
-#     #
-#     publishKey( $conf , 'com' , $keyrr );
-#
-
     # we have a bunch of nested loops here beaauce
     # we're supporting lots of config levels
 
@@ -926,8 +953,15 @@ sub checkAllKeys {
             foreach my $domain ( @{ $conf->{domains}{$level}{$lname} } ) {
                 logit( "Query keys for domain : $level : $lname : $domain" );
 
+# Step 1 , 
+#    Query DNS for the current valid trust anchors and their state
+
                 # punt a domain to DNS, get back the state of all ids
                 my $validIDs = validateDomainKeys( $conf , $domain );
+
+# Step 2 , 
+#   compare all keys on the grid to all keys in DNS,
+#   and update the state of anything that changes
 
 #                 print Dumper ( $validIDs );
 
@@ -1022,35 +1056,36 @@ sub checkState {
 
 
     # a keytag could have changed if it was revoked, so we have to
-    # create a new index of the keys based on their 'keyid'
+    # create a new index of the Queried keys based on their 'keyid'
 
     my $validKeyIDs = { map { $_->{rdata}->keyid => $_ } 
             values %{ $args->{keys} } };
 
-    # $validKeyIDs is now a HASHREF with the state for each ID
+    # $validKeyIDs is now a HASHREF with the state for each GRIDID
     # and the Net::DNS::RR::DNSKEY record
 
-    # [ ] we should walk the keys we know about (on the grid)
+#     GRIDID => {
+#         state => STR
+#         rdata => { Net::DNS::RR::DNSKEY },
+#     }
+
+    # [ ] walk the keys we know about (on the grid)
     #    since this is the last KNOWN state
     # and compare them to the keys we just queried
 
 
-    foreach my $id ( keys %{ $validKeyIDs } ) {
+    foreach my $id ( keys %{ $gdata } ) {
 
         my $grec = $gdata->{$id};
         my $krec = $validKeyIDs->{$id};
         my $kstate = $krec->{state};
+        my $gstate = $grec->{state};
 
-        # identify new keys
-        unless ( $grec ) {
-            # [ ] this key is unknown to us...
-            # send it to the pending queue
-            logit( "state : $id : start -> pending");
-            next ;
-        }
-        
+        # N: we are always comparing:
+        #     LAST KNOWN STATE <=> Current state
+
         # ignore things that don't change
-        if ( $grec->{state} eq $kstate ) {
+        if ( $gstate eq $kstate ) {
             logit( "state : $id : no change");
             next ;
         }
@@ -1059,14 +1094,24 @@ sub checkState {
         my $addendtime = $grec->{time} + $conf->{holdaddtime};
         my $remendtime = $grec->{time} + $conf->{holdremtime};
 
-        # N: we are always comparing:
-        #     LAST KNOWN STATE <=> Current state
-
-        # revoked and removed keys may not be in the $validKeyIDs
-        # we need to identify them some other way..
-
         # check pending keys
-        if ( $grec->{state} eq 'pending' ) {
+        if ( $gstate eq 'pending' ) {
+
+            unless ( $krec ) {
+                # the key went away, do nothing unless we are out of time
+                if ( time() > $addendtime ) {
+                    logit( "state : $id : pending -> removed");
+                    removeKey( $conf , $grec );
+                }
+
+                # [ ] the RFC states we should re-set the timer
+                # for this key, but that means the key will NEVER get
+                # removed from the grid. IFF we see it again, it will get
+                # added as pending, the the timer will get re-set at that
+                # time
+
+                next
+            }
 
             if ( $kstate eq 'valid' ) {
                 # release from the timers
@@ -1082,68 +1127,129 @@ sub checkState {
 
                 }
                 else {
+                    # it's valid but not ready yet
                     logit( "state : $id : pending -> onhold");
                 }
             }
             else {
+                # we should never get here
                 logerror( "state : $id : unknown pending -> $kstate");
             }
 
             next;
         }
 
-#         if ( $grec->{state} eq 'revoked' ) {
-#             # just remove it as a trust anchor
-#                 if ( time() > $remendtime ) {
-#                     logit( "state : $id : revoked -> removed");
-#                     # [ ] update this RR
-#                 }
-#         }
+        # [ ] missing
+        if ( $gstate eq 'missing' ) {
+            unless ( $krec ) {
+                # it's still missing
+                next ;
+            }
 
-#         if ( $grec->{state} eq 'removed' ) {
-#                 if ( time() > $remendtime ) {
-#                     logit( "state : $id : removed -> trash");
-#                     # [ ] delete this RR
-#                 }
-#         }
-# 
+            if ( $kstate eq 'valid' ) {
+                # abnormal case, just track it
+                logit( "state : $id : missing -> valid");
+                $grec->{state} = 'valid';
+                updateKey( $conf , $grec );
+            }
+            elsif ( $kstate eq 'revoked' ) {
+                logit( "state : $id : missing -> revoked");
+
+                # this is no longer a trust anchor
+                $grec->{state} = 'revoked';
+                updateKey( $conf , $grec );
+                discoKey( $conf , $domain , $krec->{rdata} );
+            }
+            else {
+                # we should never get here
+                logerror( "state : $id : unknown missing -> $kstate");
+            }
+        }
+
+        # [ ] Valid
+        if ( $gstate eq 'valid' ) {
+            unless ( $krec ) {
+                # the key went away, without being revoked.
+                # [ ] the RFC doesn't say what to do, just track it
+                logwarn( "state : $id : valid -> missing");
+#                 removeKey( $conf , $grec );
+                $grec->{state} = 'missing';
+                updateKey( $conf , $grec );
+                next ;
+            }
+
+            if ( $kstate eq 'revoked' ) {
+                logit( "state : $id : valid -> revoked");
+
+                # this is no longer a trust anchor, and the keytg changed
+                $grec->{id} = $krec->{rdata}->keytag(),
+                $grec->{state} = 'revoked';
+                updateKey( $conf , $grec );
+                discoKey( $conf , $domain , $krec->{rdata} );
+            }
+            else {
+                # we should never get here
+                logerror( "state : $id : unknown valid -> $kstate");
+            }
+
+            next ;
+        }
+
+        # [ ] Revoked
+        if ( $gstate eq 'revoked' ) {
+            if ( $kstate ) {
+                # a revoked key became valid !!
+                logerror( "state : $id : unknown revoked -> $kstate");
+            }
+            else {
+                # the key was finally removed from the RRset
+                logit( "state : $id : revoked -> removed");
+                $grec->{state} = 'removed';
+                updateKey( $conf , $grec );
+            }
+        }
+
+        # [ ] Removed
+        if ( $gstate eq 'removed' ) {
+            if ( $kstate ) {
+                # a removed key came back ??
+                logerror( "state : $id : unknown removed -> $kstate");
+            }
+            else {
+                # the key was finally removed from the RRset
+                if ( time() > $remendtime ) {
+                    logit( "state : $id : removed -> delete");
+                    removeKey( $conf , $grec );
+                }
+            }
+        }
 
     }
 
-    # [ ] then walk any dangling keys on the grid
+    # [ ] then walk any dangling keys from the query
+    # any remaining keys in the $validKeyIDs index are new to us
+    # and should just be added as pending
 
-#     print Dumper ( $args );
+    foreach my $id ( keys %{ $validKeyIDs } ) {
+    
+        # send it to the pending queue
+        # [ ] :
+        logit( "state : $id : start -> pending");
 
-#                 # see if we already know about it..
-#                 unless ( $conf->{keys}{$domain}{$id} ) {
-# 
-#                     # [ ] 
-#                     my $level = 'grid';
-#                     addKey( $conf , {
-#                         domain => $domain,
-#                         id => $id,
-#                         level => $level,
-#                         lvlname => $level,
-#                         info => "",
-#                     });
-# 
-#                     $conf->{keys}{$domain}{$id}{ongrid} = 'new'
-#                 }
-# 
-#                 # and add the dnsinfo to the config
-#                 $conf->{keys}{$domain}{$id}{query} = "ok";
-#                 $conf->{keys}{$domain}{$id}{rr} = {
-#                     flags => $rr->flags(),
-#                     sep => $rr->sep(),
-#                     # we need the WHOLE key for the trust anchor
-#                     key => $rr->key(),
-#                     # and keep an MD5 sum for repairs and regex
-#                     digest => md5_base64 ( $rr->key() ),
-#                     algorithm => $rr->algorithm(),
-# #                     key => substr($rr->key(), -8, 8),
-#                     private => $rr->privatekeyname(),
-#                     tag => $rr->keyid(),
-#                 }
+        my $krec = $validKeyIDs->{$id};
+
+        my $rec = {
+            domain => $domain,
+            level => $level,
+            lvlname => $lname,
+            id => $krec->{rdata}->keytag(),
+            gid => $id,
+            state => 'pending',
+        };
+        
+        addKey( $conf , $rec );
+        
+    }
 
 }
 
@@ -1730,7 +1836,9 @@ sub getAnchors {
     my ( $gobj ) = $session->get(
         object => "Infoblox::Grid::DNS",
     );
-    getSessionErrors( $session ); 
+    getSessionErrors( $session ,"getAnchors : Infoblox::Grid::DNS"); 
+
+    return undef unless $gobj ;
 
     my $data = {};
     # walk all the anchors, and index them by domain and digest
