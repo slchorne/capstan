@@ -33,6 +33,8 @@ use Net::DNS;
 use Getopt::Long qw(:config no_ignore_case auto_help);
 use Pod::Usage;
 
+# source Net-DNS-SEC/RR/DNSKEY.pm
+
 my @ALGBYNUM = (
         1=>"RSAMD5",
         3=>"DSA",
@@ -41,9 +43,10 @@ my @ALGBYNUM = (
         7=>"NSEC3RSASHA1",
         8=>"RSASHA256",
         10=>"RSASHA512",
-#         12=>"GOST R 34.10-200",
-#         13=>"ECDSA/SHA-256",
-#         14=>"ECDSA/SHA-384",
+#         11=>""   # reserver
+        12=>"ECCGOST",
+        13=>"ECDSAP256SHA256",
+        14=>"ECDSAP384SHA384",
 );
 
 my %ALGNUMLOOK = @ALGBYNUM ;
@@ -120,7 +123,6 @@ capstan : an implementation of RFC 5011 for Infoblox
  Options:
 
   -a <domain>   Add a domain to track
-  -f <file>     txt file with DNSKEYS
   -r <domain>   Remove a domain to track
   -l            List tracked domains
   -k            List tracked keys
@@ -207,9 +209,18 @@ exit ;
 
 =head2 -a <domain>
 
-Add a domain to the tracker
+Add a domain to the tracker, primed by an initial trust anchor(s)
 
-This will create a TXT record in the rfc5011.local zone for the namespace
+This will look in the existing trust anchor in the Grid, View or Member
+DNS properties, and, if it finds one, use this to prime a lookup for the
+published trust anchors for that domain.
+
+All the published keys will then be tracked for that domain.
+
+You only need a single key to be added to the DNS settings to prime the
+domain
+
+This will create a TXT record(s) in the rfc5011.local zone for the namespace
 of the tracked domain
 
 =cut
@@ -222,9 +233,9 @@ sub addDomain {
     my ( $conf , $domain ) = @_ ;
 
     # adding a domain requires using an existing trust anchor
-    # so we just use the config to query the grid and DNS
-    # and return any valid anchors for this domain as a list of IDs
-    # and additonal keys
+    # so we just use the config to get the grid anchor, and prime a DNS query
+    # we return any valid anchors for this domain as a list of IDs
+    # and additonal keys we also found
 
     my ( $anchorids , @keys ) = validateAnchor( $conf , $domain );
 
@@ -334,144 +345,6 @@ sub delDomain {
     }
 
     return 1 ;
-
-}
-
-=head2 -l 
-
-List all the domains being tracked
-
-This will get all the TXT records in the rfc5011.local zone where the
-extensible_attribute 'RFC5011Type' == 'domain'
-
-=cut
-
-sub getDomains {
-    my ( $conf ) = @_ ;
-
-    # get all the domains and insert them into the config
-    # called from loadGridConf
-
-    my $domaindata ;
-
-    # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
-    return unless $session ;
-
-    my ( @domains ) = $session->search(
-        object => "Infoblox::DNS::Record::TXT",
-        zone => $conf->{zone},
-        extensible_attributes => { RFC5011Type => { value => "domain" } }
-    );
-    getSessionErrors( $session , "list domains" ) if $DEBUG ;
-
-#     print Dumper ( \@domains );
-
-    # we want a hierarichal struct
-
-    if ( @domains ) {
-        foreach my $dobj ( @domains ) {
-            my $level = getAttributes( $dobj , 'RFC5011Level' );
-            my $loc = getAttributes( $dobj , 'RFC5011Name' );
-
-            my $parent = "$loc.$level.$conf->{zone}";
-            ( my $name = $dobj->name() ) =~ s/\.$parent//;
-
-            push @{ $domaindata->{ $level }{ $loc } } , $name ;
-
-        }
-    }
-
-    return ( $domaindata );
-
-}
-
-# get all the keys from the grid
-#
-# ALL TXT records tagged as 'key'
-#
-
-sub getKeys {
-    my ( $conf ) = @_ ;
-
-    # get all the domains and insert them into the config
-    # called from loadGridConf
-
-    # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
-    return unless $session ;
-
-    my ( @keys ) = $session->search(
-        object => "Infoblox::DNS::Record::TXT",
-        zone => $conf->{zone},
-        extensible_attributes => { RFC5011Type => { value => "key" } }
-    );
-    getSessionErrors( $session , "list keys" ) if $DEBUG ;
-
-    my $keyData = {};
-
-    # now walk each of them and insert them into the conf
-    foreach my $kobj ( @keys ) {
-        my $level = getAttributes( $kobj , 'RFC5011Level' );
-        my $loc = getAttributes( $kobj , 'RFC5011Name' );
-        my $state = getAttributes( $kobj , 'RFC5011State' );
-
-        my $parent = "$loc.$level.$conf->{zone}";
-
-        my ( $id , $domain ) = $kobj->name() 
-            =~ /(\d+).key.(\S+).$parent/;
-
-        # perhaps a platter hierarchy, with a single namespced key?
-        # [ ] well, execpt that is breaks if there is a special
-        #     char in any of the EA values ( e.g. "my:dumb:viewname" )
-#         $keyData->{$domain}{$id}{ongrid} = 'true';
-        $keyData->{$level}{$loc}{$domain}{$id} = {
-            domain => $domain,
-            id => $id,
-            level => $level,
-            lvlname => $loc,
-            time => getAttributes( $kobj , 'RFC5011Time' ),
-            state => $state,
-        };
-    }
-
-    return $keyData ;
-
-}
-
-sub getAnchors {
-    my ( $conf ) = @_ ;
-
-    # get all the existing trust anchors configured on the grid
-    # called from loadGridConf()
-
-    # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
-    return unless $session ;
-
-    # We're ok, continue to configure the grid
-    my ( $gobj ) = $session->get(
-        object => "Infoblox::Grid::DNS",
-    );
-    getSessionErrors( $session ); 
-
-    my $data = {};
-    # walk all the anchors, and index them by domain and digest
-    foreach my $gkey ( @{ $gobj->dnssec_trusted_keys() } ) {
-
-        my $alg = getAlgorithm ( $gkey->algorithm() );
-        my $k = $gkey->key();
-        my $domain = $gkey->fqdn();
-
-        # generate a Net::DNS::RR so we can calculate the keyid
-        my $keyrr = new Net::DNS::RR("$domain DNSKEY 257 3 $alg $k");
-
-        my $id = $keyrr->keytag();
-
-        $data->{ $domain }{ $id } = $gkey ;
-    }
-
-    return ( $data , $gobj );
 
 }
 
@@ -669,6 +542,625 @@ sub discoKey {
 
 }
 
+=head2 -l 
+
+List all the domains being tracked
+
+This will get all the TXT records in the rfc5011.local zone where the
+extensible_attribute 'RFC5011Type' == 'domain'
+
+=cut
+
+#
+# format domain data from the conf
+#
+
+sub listDomains {
+    my ( $conf ) = @_ ;
+
+    # it's a struct, so use dumper
+    local $Data::Dumper::Terse = 1 ;
+    print Dumper ( $conf->{domains} );
+
+#     if ( $conf->{domains} ) {
+#         print join ( "\n" , @{ $conf->{domains} } ) ."\n";
+#     }
+
+    return 1
+}
+
+=head2 -k 
+
+List all the trust anchors being tracked
+
+This will get all the TXT records in the rfc5011.local zone where the
+extensible_attribute 'RFC5011Type' == 'key' and show what domain and area
+of the grid they relate to
+
+=cut
+
+#
+# format key data from the conf
+#
+sub listKeys {
+
+    local $Data::Dumper::Terse = 1 ;
+#     local $Data::Dumper::Maxdepth = 4 ;
+    print Dumper ( $conf->{keys} );
+
+    # we want a better formatter than data::dumper
+    # in theory we could do this at load time, but the sorting may suck
+    # really, we want recursion here and be ignorant of the struct
+    # but that turns out to be more lines of code...
+
+#     print "\n";
+#     foreach my $area ( sort keys %{ $conf->{keys} } ) {
+#         foreach my $loc ( sort keys %{ $conf->{keys}{$area} } ) {
+#             foreach my $domain ( sort keys %{ $conf->{keys}{$area}{$loc} } ) {
+#                 my $drec = $conf->{keys}{$area}{$loc}{$domain};
+#                 foreach my $id ( sort keys %{ $drec } ) {
+#                     print "$area : $loc : $domain : $id\n";
+#                 }
+#             }
+#         }
+#     }
+#     print "\n";
+
+    return 1;
+}
+
+######################################################
+#
+# DNS queries and resolver stuff handling
+#
+
+#
+# validate an anchor in the grid, compare it to DNS
+# 
+# return a list of valid ids, and all the DNS keys
+#
+
+sub validateAnchor {
+    my ( $conf , $domain ) = @_ ;
+
+    # when the config loaded, we got the current anchors from the grid
+    # and indexed them by their keyid.
+    # so we just use that data as the bootstrap point
+
+    my $anchors = $conf->{anchors}{$domain};
+    unless ( $anchors ) {
+        logerror( "No trust anchor(s) loaded for : $domain" );
+        return 0;
+    }
+
+    logit("Validating existing anchors for $domain in DNS");
+
+    # query the DNS source for all the keys and verify that the anchors
+    # we loaded are all published keys,
+
+    my ( $keyindex, @allkeys ) = queryAndIndexKeys( $conf , $domain );
+
+    # THEN query the signatures, and index them by the ID
+    my $sigindex = queryAndIndexSigs( $conf , $domain );
+
+    # so now compare the anchors on the grid with the keys
+    # we pulled from DNS
+    my $validIDs ;
+    my $badkeys ;
+
+    # compare by matching the keyid
+    foreach my $id ( keys %{ $anchors } ) {
+        unless ( $keyindex->{$id} ) {
+            # [ ] one bad key kinda ruins the batch
+            #     (If you are adding a new domain to track)
+            logerror( "Anchor : $id : $anchors->{$id}{key}");
+            logerror( "Anchor : $id : is not a published key for $domain" );
+
+            $badkeys++;
+            next ;
+        }
+
+        # otherwise this key checks out, lets double check
+        # and validate it. Since the tags match, we can use the
+        # RR in the dataset from the query
+        
+        my $keyrr = $keyindex->{$id};
+#         my $id = $keyrr->keyid();
+
+        unless ( $keyrr->sep() ){
+            logerror( "Anchor : $id is not a SEP key" );
+            $badkeys++;
+            next ;
+        }
+
+        # find the matching signature
+        my $sigrr = $sigindex->{ $id };
+        unless ( $sigrr ) {
+            logerror( "Anchor : $id : missing RRSIG" );
+            $badkeys++;
+            next ;
+        }
+
+        # now try and verify this signature with our orignal key
+        # and the queried keyset
+        if ( $sigrr->verify( [ @allkeys ], $keyrr ) ) {
+            logit( "Anchor : $id : is valid" );
+            push @{ $validIDs } , $id ;
+        }
+        else {
+            logerror( "Anchor : $id : " . $sigrr->vrfyerrstr ) ;
+            $badkeys++;
+        }
+
+    }
+
+    # lastly, we don't know the full context of this validate request,
+    # so we need to also pass back the keys we found to the parent and let
+    # that decide what to do with them
+
+    # any bad key ruins the batch
+    if ( $badkeys ) {
+        logit( "Cannot add '$domain' without a valid set of anchors" );
+        return undef ;
+    }
+    else {
+        return ( $validIDs , values %{ $keyindex } );
+    }
+
+}
+
+#
+# [ ] GN:DN ??
+#
+# inserts a list of Net::DNS:RR objects into the 'keys' part of the
+# config.
+#
+# also flags those records with some sort of state
+#
+sub addKeyRRsToConfig {
+    my ( $conf , $state , @rrlist ) = @_ ;
+
+    foreach my $rr ( @rrlist ) {
+
+        my $id = $rr->keyid() ;
+
+#         # and add the dnsinfo to the config
+#         $conf->{keys}{$domain}{$id}{state} = $state,
+#         $conf->{keys}{$domain}{$id}{query} = "ok";
+#         $conf->{keys}{$domain}{$id}{rr} = {
+#             flags => $rr->flags(),
+#             sep => $rr->sep(),
+#             # we need the WHOLE key for the trust anchor
+#             key => $rr->key(),
+#             # and keep an MD5 sum for repairs and regex
+#             digest => md5_base64 ( $rr->key() ),
+#             algorithm => $rr->algorithm(),
+# #                     key => substr($rr->key(), -8, 8),
+#             private => $rr->privatekeyname(),
+#             tag => $rr->keyid(),
+#         }
+
+    }
+}
+
+######################################################
+#
+# Net::DNS operations
+#
+
+sub getResolver {
+    my ( $conf ) = @_ ;
+
+    return undef unless $conf->{nameserver};
+
+    # uses fancy ref caching..
+    return $conf->{resolver} if $conf->{resolver} ;
+
+    # and local hacks
+    my $ns = $XRES ? $XRES : $conf->{nameserver};
+
+    logit ( "Sending DNS queries to $ns");
+
+    my $res = Net::DNS::Resolver->new;
+    $res->nameservers( $ns );
+    $res->tcp_timeout(10);
+    $res->udp_timeout(5);
+
+    # and cache it
+    $conf->{resolver} = $res ;
+
+    return ( $res ) ;
+}
+
+#
+# Generic DNS loopup operations
+# DNS lookup with error checking, returns Net::DNS::Packet" object
+#
+
+sub querybyType {
+    my ( $conf , $fqdn , $type ) = @_ ;
+    my $resolver = getResolver( $conf );
+
+    logit( "Querying $fqdn for $type");
+    # get ALL the DNSKEYS for this domain
+    my $rrs = $resolver->send($fqdn , $type, "IN");
+    # $query is a a "Net::DNS::Packet" object
+    if ( ! $rrs ) {
+        # we got an error
+        logerror( "$type query : $fqdn : " . $resolver->errorstring );
+    }
+    return $rrs ;
+}
+
+
+#
+# get all keys for a domain, index by ID
+#
+# return the and index of SEP keys, and all the keys
+#
+
+sub queryAndIndexKeys {
+    my ( $conf , $domain ) = @_ ;
+    my $keys = querybyType( $conf , $domain , 'DNSKEY' );
+
+    # now index these keys by their keyid, but only keep SEP keys
+    my $keyindex ;
+    foreach my $krr ($keys->answer) {
+        next unless $krr->sep();
+#         $keyindex->{ $krr->keyid() } = $krr;
+        $keyindex->{ $krr->keytag() } = $krr;
+    }
+
+    return ( $keyindex , $keys->answer );
+}
+
+#
+# get all signatures for a domain, index by ID
+#
+# return the index
+#
+
+sub queryAndIndexSigs {
+    my ( $conf , $domain ) = @_ ;
+
+    my $sigs = querybyType( $conf , $domain , 'RRSIG' );
+
+    my $sigindex ;
+    # now find the right SIGs for our project and put them in an index
+    foreach my $rr ($sigs->answer) {
+        next unless $rr->typecovered() eq 'DNSKEY';
+        $sigindex->{ $rr->keytag() } = $rr ;
+    }
+
+    return $sigindex ;
+
+}
+
+#
+# validate all keys in a domain.
+# 
+# validation requires you to get and compare ALL the keys, so you may as
+# well do it in a batch and find a way to pass back bulk results
+#
+#
+
+sub validateDomainKeys {
+    my ( $conf , $domain ) = @_ ;
+
+    logit("Validating keys for $domain in DNS");
+
+    my ( $idx, @allkeys ) = queryAndIndexKeys( $conf , $domain );
+
+    return undef unless @allkeys ;
+
+    # get all the signatures, indexed by id
+    my $sigindex = queryAndIndexSigs( $conf , $domain );
+
+    my $keystate = {};
+    # now walk ALL of the keys, and verify them
+    foreach my $keyrr ( @allkeys ) {
+        # only track trust anchors
+        next unless $keyrr->sep();
+
+        # keep all the dnsinfo, track state
+        my $id = $keyrr->keytag();
+        $keystate->{$id} = {
+            rdata => $keyrr,
+            state => undef ,
+        };
+        my $krec = $keystate->{$id};
+
+        if ( $keyrr->revoke() ) {
+            logit( "key : $id : revoked" );
+            $krec->{state} = 'revoked';
+            next ;
+        }
+
+        my $sigrr = $sigindex->{ $id };
+
+        unless ( $sigrr ) {
+            logit( "No RRSIG for id $id found");
+            $krec->{state} = 'nosig';
+            next ;
+        }
+
+        # [ ] is a revoked key valid ??
+
+        # now try and verify this signature with our orignal key
+        if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
+            $krec->{state} = 'valid';
+            logit( "key : $id : is valid" );
+        }
+        else {
+            $krec->{state} = 'error';
+            logerror( "key : $id : " . $sigrr->vrfyerrstr ) ;
+        }
+    }
+
+    return $keystate ;
+
+}
+
+######################################################
+#
+# Main operational routines
+#
+
+sub checkAllKeys {
+    my ( $conf ) = @_ ;
+    my $resolver = getResolver( $conf );
+
+#     # [ ] 
+#     #     we're just testing for now
+#     discoKey( $conf , 'com' , $keyrr  ) ;
+# 
+#     #
+#     publishKey( $conf , 'com' , $keyrr );
+#
+
+    # we have a bunch of nested loops here beaauce
+    # we're supporting lots of config levels
+
+    foreach my $level ( sort keys %{ $conf->{domains} } ) {    
+        foreach my $lname ( sort keys %{ $conf->{domains}{$level} } ) {    
+            foreach my $domain ( @{ $conf->{domains}{$level}{$lname} } ) {
+                logit( "Query keys for domain : $level : $lname : $domain" );
+
+                # punt a domain to DNS, get back the state of all ids
+                my $validIDs = validateDomainKeys( $conf , $domain );
+
+#                 print Dumper ( $validIDs );
+
+                checkState ( $conf , {
+                    level => $level,
+                    lvlname => $lname,
+                    domain => $domain,
+                    keys => $validIDs,
+                });
+
+            }
+        }
+    }
+
+    return ;
+
+}
+
+#
+# compare the state of a set of key IDs with what we have in our config
+#
+
+sub checkState {
+    my ( $conf , $args ) = @_ ;
+
+    print Dumper ( (caller(0))[3] , $args ) if $DEBUG ;
+
+    my $domain = $args->{domain};
+    my $level = $args->{level};
+    my $lname = $args->{lvlname};
+
+# the statemachine
+#
+# Add Hold down time == 30 days ( 2592000 seconds )
+# Remove Hold down time == 30 days 
+#
+# Any new 'Valid' keys can be published
+# Any new 'Revoked' keys can be discoed
+# anything else is just a flag in the database
+# 
+#     The key has not or ever been seen
+# Start -> AddPend : if valid DNSKEY in RRSet with a new SEP key
+# 
+#     Wait until publishing
+# AddPend -> Start : if key in not in valid DNSKEY RRSet
+#         -> Valid : if key is in a valid RRSet after the 'add time'
+#                    and it is still valid in the rrset
+# 
+#     You can publish this key
+# Valid -> Missing : if key in not in valid DNSKEY RRSet
+#       -> Revoked : if key has "REVOKED" bit set
+# 
+#     The key went missing without being revoked (abnormal state)
+#     Continue to publish this key
+# Missing -> Valid : if key is in valid DNSKEY RRSet
+#         -> Revoked : if key has "REVOKED" bit set 
+# 
+#     DO NOT publish this key
+# Revoked -> Removed : if revoked key is not in RRSet for 30 days
+# 
+#     DO NOT publish this key, and never re-publish this key
+#     remove it from the database 30 days after it was 'removed'
+#   Removed -> /dev/null
+# And a removed key is no-longer of concern
+
+    my $gdata = $conf->{keys}{$level}{$lname}{$domain};
+
+#  $gdata looks like this:
+#
+#   'keys' => {
+#     'grid' => {
+#       'default' => {
+#         'org' => {
+#           '20334' => {
+#             'domain' => 'org',
+#             'id' => '20334',
+#             'level' => 'grid',
+#             'lvlname' => 'default',
+#             'state' => 'pending',
+#             'time' => '1430091852'
+#           },
+#           '8763' => {
+#             'domain' => 'org',
+#             'id' => '8763',
+#             'level' => 'grid',
+#             'lvlname' => 'default',
+#             'state' => 'valid',
+#             'time' => '1430091852'
+#           }
+#         }
+#       }
+
+
+    # a keytag could have changed if it was revoked, so we have to
+    # create a new index of the keys based on their 'keyid'
+
+    my $validKeyIDs = { map { $_->{rdata}->keyid => $_ } 
+            values %{ $args->{keys} } };
+
+    # $validKeyIDs is now a HASHREF with the state for each ID
+    # and the Net::DNS::RR::DNSKEY record
+
+    # [ ] we should walk the keys we know about (on the grid)
+    #    since this is the last KNOWN state
+    # and compare them to the keys we just queried
+
+
+    foreach my $id ( keys %{ $validKeyIDs } ) {
+
+        my $grec = $gdata->{$id};
+        my $krec = $validKeyIDs->{$id};
+        my $kstate = $krec->{state};
+
+        # identify new keys
+        unless ( $grec ) {
+            # [ ] this key is unknown to us...
+            # send it to the pending queue
+            logit( "state : $id : start -> pending");
+            next ;
+        }
+        
+        # ignore things that don't change
+        if ( $grec->{state} eq $kstate ) {
+            logit( "state : $id : no change");
+            next ;
+        }
+
+        # cache some expire timers
+        my $addendtime = $grec->{time} + $conf->{holdaddtime};
+        my $remendtime = $grec->{time} + $conf->{holdremtime};
+
+        # N: we are always comparing:
+        #     LAST KNOWN STATE <=> Current state
+
+        # revoked and removed keys may not be in the $validKeyIDs
+        # we need to identify them some other way..
+
+        # check pending keys
+        if ( $grec->{state} eq 'pending' ) {
+
+            if ( $kstate eq 'valid' ) {
+                # release from the timers
+                if ( time() > $addendtime ) {
+                    logit( "state : $id : pending -> valid : offhold");
+                    $grec->{state} = 'valid';
+
+                    print Dumper ( $grec ) if $DEBUG > 1 ;
+#                     print Dumper ( $grec );
+
+                    updateKey( $conf , $grec );
+                    publishKey( $conf , $domain , $krec->{rdata} );
+
+                }
+                else {
+                    logit( "state : $id : pending -> onhold");
+                }
+            }
+            else {
+                logerror( "state : $id : unknown pending -> $kstate");
+            }
+
+            next;
+        }
+
+#         if ( $grec->{state} eq 'revoked' ) {
+#             # just remove it as a trust anchor
+#                 if ( time() > $remendtime ) {
+#                     logit( "state : $id : revoked -> removed");
+#                     # [ ] update this RR
+#                 }
+#         }
+
+#         if ( $grec->{state} eq 'removed' ) {
+#                 if ( time() > $remendtime ) {
+#                     logit( "state : $id : removed -> trash");
+#                     # [ ] delete this RR
+#                 }
+#         }
+# 
+
+    }
+
+    # [ ] then walk any dangling keys on the grid
+
+#     print Dumper ( $args );
+
+#                 # see if we already know about it..
+#                 unless ( $conf->{keys}{$domain}{$id} ) {
+# 
+#                     # [ ] 
+#                     my $level = 'grid';
+#                     addKey( $conf , {
+#                         domain => $domain,
+#                         id => $id,
+#                         level => $level,
+#                         lvlname => $level,
+#                         info => "",
+#                     });
+# 
+#                     $conf->{keys}{$domain}{$id}{ongrid} = 'new'
+#                 }
+# 
+#                 # and add the dnsinfo to the config
+#                 $conf->{keys}{$domain}{$id}{query} = "ok";
+#                 $conf->{keys}{$domain}{$id}{rr} = {
+#                     flags => $rr->flags(),
+#                     sep => $rr->sep(),
+#                     # we need the WHOLE key for the trust anchor
+#                     key => $rr->key(),
+#                     # and keep an MD5 sum for repairs and regex
+#                     digest => md5_base64 ( $rr->key() ),
+#                     algorithm => $rr->algorithm(),
+# #                     key => substr($rr->key(), -8, 8),
+#                     private => $rr->privatekeyname(),
+#                     tag => $rr->keyid(),
+#                 }
+
+}
+
+##################################################
+#
+# configuration handlers
+# 
+
+=head2 -m <grid.nameserver>
+
+Set the grid member to be used for DNS queries.
+
+Thus must be a grid member, and needs to be able to make recursive
+queries for the domains being managed by this utility.
+
+=cut
+
 #
 # set the grid ember for querying to,
 # OR list All members if it wasn't found
@@ -744,6 +1236,15 @@ sub setMember {
 
 }
 
+=head2 --gm <grid.master>
+
+Set or change the GM address/name that the system manages.
+
+This is usually done as part of the '--init' process, but may nttd to be
+updated as part of a grid re-configuration (E.g DR)
+
+=cut
+
 #
 # set the GM in the local config
 #
@@ -760,6 +1261,15 @@ sub setMaster {
     # must return OK
     return 1;
 }
+
+=head2 --user <username>
+
+Set or change the username (and password) configured to make API calls to
+the grid.
+
+You will be prompted to enter the password
+
+=cut
 
 #
 # get a password, save and write the config
@@ -793,52 +1303,18 @@ sub setUser {
     return 1 ;
 }
 
-#
-# format key data from the conf
-#
-sub listKeys {
+=head2 -c 
 
-    local $Data::Dumper::Terse = 1 ;
-#     local $Data::Dumper::Maxdepth = 4 ;
-    print Dumper ( $conf->{keys} );
+Show just the local configuration settings ( grid master, username , etc )
 
-    # we want a better formatter than data::dumper
-    # in theory we could do this at load time, but the sorting may suck
-    # really, we want recursion here and be ignorant of the struct
-    # but that turns out to be more lines of code...
+=cut
 
-#     print "\n";
-#     foreach my $area ( sort keys %{ $conf->{keys} } ) {
-#         foreach my $loc ( sort keys %{ $conf->{keys}{$area} } ) {
-#             foreach my $domain ( sort keys %{ $conf->{keys}{$area}{$loc} } ) {
-#                 my $drec = $conf->{keys}{$area}{$loc}{$domain};
-#                 foreach my $id ( sort keys %{ $drec } ) {
-#                     print "$area : $loc : $domain : $id\n";
-#                 }
-#             }
-#         }
-#     }
-#     print "\n";
+=head2 -C 
 
-    return 1;
-}
+Show the complete configuration settings, including all tracked domains
+and keys
 
-#
-# format domain data from the conf
-#
-sub listDomains {
-    my ( $conf ) = @_ ;
-
-    # it's a struct, so use dumper
-    local $Data::Dumper::Terse = 1 ;
-    print Dumper ( $conf->{domains} );
-
-#     if ( $conf->{domains} ) {
-#         print join ( "\n" , @{ $conf->{domains} } ) ."\n";
-#     }
-
-    return 1
-}
+=cut
 
 #
 # wrapper to hide some junk
@@ -862,6 +1338,26 @@ sub showConfig {
     $conf->{session} = $s;
 
 }
+
+=head2 --init
+
+Initialise the system and configure all required settings.
+You should only ever need to do this once
+
+  ./capstan.pl --init --gm my.grid.master --user admin
+
+This requires you to specify the grid master, and you will be prompted for
+a password for the user account. The use must be enabled for API access
+and be able to modify DNS zones, records, Grid DNS settings, Grid memners
+and extensible_attributes FORCE
+
+The init process will :
+
+ - create any required extensible_attributes
+ - create the zone 'rfc5011.Infoblox.local' 
+ - set up any other required configuration
+
+=cut
 
 sub initConfig {
     my ( $server , $user ) = @_ ;
@@ -1026,508 +1522,233 @@ sub saveLocalConfig {
     lock_store $conf , $CONFFILE;
 }
 
-#
-# DNS queries and resolver stuff handling
-#
+=head1 DATA STORAGE
+
+The IETF has a number of drafts (and RFCs) relating to the storage and
+management of trust anchors, while at the same time acknowleging the
+conflicts that may occur when applying these rules to RFC5011.
+
+This is further compounded by the way Trust anchors are stored on the
+infoblox grid, and that RFC5011 requires you to track DNSKEYS
+that are not in the published RRSET for a domain.
+
+This utility follows the basic principle of all those recomendations in
+that the management system should not rely on the keys in its database but
+merely use them to prime queries for records in the DNS.
+
+It should also be noted tht while DNSKEY RRs and RRSIG rrs can be related
+via the 'keytag', this tag will change if a key is revoked, so that method
+can't be used to track a key through it's lifecycle. The DS signature
+can't be used for simliar reasons.
+
+As such, the system uses the following components to track a trust
+anchor through its life cycle:
+
+=over
+
+=item Untracked trust anchors
+
+Untracked Trust anchors are added manually to the Grid,view, or member
+DNSSEC settings. This is how you bootstrap a domain
+
+=item Valid trust anchors
+
+Valid trust anchors are automatically added and removed to the Grid,view,
+or member DNSSEC settings
+
+The algorithm field in the Infoblox settings uses a different format to
+the one described in any of the RFCs or in the Net::DNS::Sec libraries. A
+lookup table is used to convert between the formats
+
+=item rfc5011.infoblox.local zone
+
+The utility tracks all other configuration in the disabled dns zone
+'rfc5011.infoblox.local'. This zone shoud only ever contain TXT records.
+And modifying it by hand will obviously cause some issues
+
+=item Tracked domains
+
+Tracked domains are added as TXT records to the 'rfc5011.infoblox.local'
+zone. The records are added in the form
+
+    DOMAIN.NAME.LEVEL.rfc5011.infoblox.local
+
+e.g:
+
+    org.default.grid.rfc5011.infoblox.local IN TXT
+    org.ns1.company.member.rfc5011.infoblox.local IN TXT
+    org.internal.view.rfc5011.infoblox.local IN TXT
+
+=item Tracked keys
+
+Tracked keys are added as TXT records to the 'rfc5011.infoblox.local'
+zone. The records are added in the form
+
+    GRIDID.key.DOMAIN.NAME.LEVEL.rfc5011.infoblox.local
+
+The state and timers and other information are stored in
+extensible_attributes on the record.
+
+e.g:
+
+    9795.key.org.default.grid.rfc5011.infoblox.local IN TXT
+    21366.key.org.ns1.company.member.rfc5011.infoblox.local IN TXT
+    9795.key.org.internal.view.rfc5011.infoblox.local IN TXT
+
+The GRIDID is not the keytag for the record, as this could change if a
+key is revoked or similar. Instead it is a variation of the keytag that
+ignores any flags that are set on the RR. As such it can't be directly
+used to match a queried RR to one in the config. Instead you must
+calculate the 'gridid' for the RR and match against that.
+
+The algorithm used is a variation of the one defined in RFC4034 Appendix
+B, with the 'flags','protocol' and 'algorithm' are all set to 0.
+
+The KEY is not stored on the record, just the ID that is then used to
+find a matching record from a valid current DNS query.
+
+=back
+
+=cut
 
 #
-# validate an anchor in the grid, compare it to DNS
-# 
-# return a list of valid ids, and all the DNS keys
+# pull all the domains from the config zone
+#
+# ALL TXT records tagged as 'domain'
 #
 
-sub validateAnchor {
-    my ( $conf , $domain ) = @_ ;
-
-    # when the config loaded, we got the current anchors from the grid
-    # and indexed them by their keyid.
-    # so we just use that data as the bootstrap point
-
-    my $anchors = $conf->{anchors}{$domain};
-    unless ( $anchors ) {
-        logerror( "No trust anchor(s) loaded for : $domain" );
-        return 0;
-    }
-
-    logit("Validating existing anchors for $domain in DNS");
-
-    # query the DNS source for all the keys and verify that the anchors
-    # we loaded are all published keys,
-
-    my ( $keyindex, @allkeys ) = queryAndIndexKeys( $conf , $domain );
-
-    # THEN query the signatures, and index them by the ID
-    my $sigindex = queryAndIndexSigs( $conf , $domain );
-
-    # so now compare the anchors on the grid with the keys
-    # we pulled from DNS
-    my $validIDs ;
-    my $badkeys ;
-
-    # compare by matching the keyid
-    foreach my $id ( keys %{ $anchors } ) {
-        unless ( $keyindex->{$id} ) {
-            # [ ] one bad key kinda ruins the batch
-            #     (If you are adding a new domain to track)
-            logerror( "Anchor : $id : $anchors->{$id}{key}");
-            logerror( "Anchor : $id : is not a published key for $domain" );
-
-            $badkeys++;
-            next ;
-        }
-
-        # otherwise this key checks out, lets double check
-        # and validate it. Since the tags match, we can use the
-        # RR in the dataset from the query
-        
-        my $keyrr = $keyindex->{$id};
-#         my $id = $keyrr->keyid();
-
-        unless ( $keyrr->sep() ){
-            logerror( "Anchor : $id is not a SEP key" );
-            $badkeys++;
-            next ;
-        }
-
-        # find the matching signature
-        my $sigrr = $sigindex->{ $id };
-        unless ( $sigrr ) {
-            logerror( "Anchor : $id : missing RRSIG" );
-            $badkeys++;
-            next ;
-        }
-
-        # now try and verify this signature with our orignal key
-        # and the queried keyset
-        if ( $sigrr->verify( [ @allkeys ], $keyrr ) ) {
-            logit( "Anchor : $id : is valid" );
-            push @{ $validIDs } , $id ;
-        }
-        else {
-            logerror( "Anchor : $id : " . $sigrr->vrfyerrstr ) ;
-            $badkeys++;
-        }
-
-    }
-
-    # lastly, we don't know the full context of this validate request,
-    # so we need to also pass back the keys we found to the parent and let
-    # that decide what to do with them
-
-    # any bad key ruins the batch
-    if ( $badkeys ) {
-        logit( "Cannot add '$domain' without a valid set of anchors" );
-        return undef ;
-    }
-    else {
-        return ( $validIDs , values %{ $keyindex } );
-    }
-
-}
-
-#
-# [ ] GN:DN ??
-#
-# inserts a list of Net::DNS:RR objects into the 'keys' part of the
-# config.
-#
-# also flags those records with some sort of state
-#
-sub addKeyRRsToConfig {
-    my ( $conf , $state , @rrlist ) = @_ ;
-
-    foreach my $rr ( @rrlist ) {
-
-        my $id = $rr->keyid() ;
-
-#         # and add the dnsinfo to the config
-#         $conf->{keys}{$domain}{$id}{state} = $state,
-#         $conf->{keys}{$domain}{$id}{query} = "ok";
-#         $conf->{keys}{$domain}{$id}{rr} = {
-#             flags => $rr->flags(),
-#             sep => $rr->sep(),
-#             # we need the WHOLE key for the trust anchor
-#             key => $rr->key(),
-#             # and keep an MD5 sum for repairs and regex
-#             digest => md5_base64 ( $rr->key() ),
-#             algorithm => $rr->algorithm(),
-# #                     key => substr($rr->key(), -8, 8),
-#             private => $rr->privatekeyname(),
-#             tag => $rr->keyid(),
-#         }
-
-    }
-}
-
-#
-# Net::DNS operations
-#
-
-sub getResolver {
+sub getDomains {
     my ( $conf ) = @_ ;
 
-    return undef unless $conf->{nameserver};
+    # get all the domains and insert them into the config
+    # called from loadGridConf
 
-    # uses fancy ref caching..
-    return $conf->{resolver} if $conf->{resolver} ;
+    my $domaindata ;
 
-    # and local hacks
-    my $ns = $XRES ? $XRES : $conf->{nameserver};
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
 
-    logit ( "Sending DNS queries to $ns");
+    my ( @domains ) = $session->search(
+        object => "Infoblox::DNS::Record::TXT",
+        zone => $conf->{zone},
+        extensible_attributes => { RFC5011Type => { value => "domain" } }
+    );
+    getSessionErrors( $session , "list domains" ) if $DEBUG ;
 
-    my $res = Net::DNS::Resolver->new;
-    $res->nameservers( $ns );
-    $res->tcp_timeout(10);
-    $res->udp_timeout(5);
+#     print Dumper ( \@domains );
 
-    # and cache it
-    $conf->{resolver} = $res ;
+    # we want a hierarichal struct
 
-    return ( $res ) ;
-}
+    if ( @domains ) {
+        foreach my $dobj ( @domains ) {
+            my $level = getAttributes( $dobj , 'RFC5011Level' );
+            my $loc = getAttributes( $dobj , 'RFC5011Name' );
 
-#
-# Generic DNS loopup operations
-# DNS lookup with error checking, returns Net::DNS::Packet" object
-#
+            my $parent = "$loc.$level.$conf->{zone}";
+            ( my $name = $dobj->name() ) =~ s/\.$parent//;
 
-sub querybyType {
-    my ( $conf , $fqdn , $type ) = @_ ;
-    my $resolver = getResolver( $conf );
+            push @{ $domaindata->{ $level }{ $loc } } , $name ;
 
-    logit( "Querying $fqdn for $type");
-    # get ALL the DNSKEYS for this domain
-    my $rrs = $resolver->send($fqdn , $type, "IN");
-    # $query is a a "Net::DNS::Packet" object
-    if ( ! $rrs ) {
-        # we got an error
-        logerror( "$type query : $fqdn : " . $resolver->errorstring );
-    }
-    return $rrs ;
-}
-
-
-#
-# get all keys for a domain, index by ID
-#
-# return the and index of SEP keys, and all the keys
-#
-
-sub queryAndIndexKeys {
-    my ( $conf , $domain ) = @_ ;
-    my $keys = querybyType( $conf , $domain , 'DNSKEY' );
-
-    # now index these keys by their keyid, but only keep SEP keys
-    my $keyindex ;
-    foreach my $krr ($keys->answer) {
-        next unless $krr->sep();
-#         $keyindex->{ $krr->keyid() } = $krr;
-        $keyindex->{ $krr->keytag() } = $krr;
+        }
     }
 
-    return ( $keyindex , $keys->answer );
-}
-
-#
-# get all signatures for a domain, index by ID
-#
-# return the index
-#
-
-sub queryAndIndexSigs {
-    my ( $conf , $domain ) = @_ ;
-
-    my $sigs = querybyType( $conf , $domain , 'RRSIG' );
-
-    my $sigindex ;
-    # now find the right SIGs for our project and put them in an index
-    foreach my $rr ($sigs->answer) {
-        next unless $rr->typecovered() eq 'DNSKEY';
-        $sigindex->{ $rr->keytag() } = $rr ;
-    }
-
-    return $sigindex ;
+    return ( $domaindata );
 
 }
 
 #
-# validate all keys in a domain.
-# 
-# validation requires you to get and compare ALL the keys, so you may as
-# well do it in a batch and find a way to pass back bulk results
+# get all the keys from the grid
 #
+# ALL TXT records tagged as 'key'
 #
 
-sub validateDomainKeys {
-    my ( $conf , $domain ) = @_ ;
+sub getKeys {
+    my ( $conf ) = @_ ;
 
-    logit("Validating keys for $domain in DNS");
+    # get all the domains and insert them into the config
+    # called from loadGridConf
 
-    my ( $idx, @allkeys ) = queryAndIndexKeys( $conf , $domain );
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
 
-    return undef unless @allkeys ;
+    my ( @keys ) = $session->search(
+        object => "Infoblox::DNS::Record::TXT",
+        zone => $conf->{zone},
+        extensible_attributes => { RFC5011Type => { value => "key" } }
+    );
+    getSessionErrors( $session , "list keys" ) if $DEBUG ;
 
-    # get all the signatures, indexed by id
-    my $sigindex = queryAndIndexSigs( $conf , $domain );
+    my $keyData = {};
 
-    my $keystate = {};
-    # now walk ALL of the keys, and verify them
-    foreach my $keyrr ( @allkeys ) {
-        # only track trust anchors
-        next unless $keyrr->sep();
+    # now walk each of them and insert them into the conf
+    foreach my $kobj ( @keys ) {
+        my $level = getAttributes( $kobj , 'RFC5011Level' );
+        my $loc = getAttributes( $kobj , 'RFC5011Name' );
+        my $state = getAttributes( $kobj , 'RFC5011State' );
 
-        # keep all the dnsinfo, track state
-        my $id = $keyrr->keytag();
-        $keystate->{$id} = {
-            rdata => $keyrr,
-            state => undef ,
+        my $parent = "$loc.$level.$conf->{zone}";
+
+        my ( $id , $domain ) = $kobj->name() 
+            =~ /(\d+).key.(\S+).$parent/;
+
+        # perhaps a platter hierarchy, with a single namespced key?
+        # [ ] well, execpt that is breaks if there is a special
+        #     char in any of the EA values ( e.g. "my:dumb:viewname" )
+#         $keyData->{$domain}{$id}{ongrid} = 'true';
+        $keyData->{$level}{$loc}{$domain}{$id} = {
+            domain => $domain,
+            id => $id,
+            level => $level,
+            lvlname => $loc,
+            time => getAttributes( $kobj , 'RFC5011Time' ),
+            state => $state,
         };
-        my $krec = $keystate->{$id};
-
-        if ( $keyrr->revoke() ) {
-            logit( "key : $id : revoked" );
-            $krec->{state} = 'revoked';
-            next ;
-        }
-
-        my $sigrr = $sigindex->{ $id };
-
-        unless ( $sigrr ) {
-            logit( "No RRSIG for id $id found");
-            $krec->{state} = 'nosig';
-            next ;
-        }
-
-        # [ ] is a revoked key valid ??
-
-        # now try and verify this signature with our orignal key
-        if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
-            $krec->{state} = 'valid';
-            logit( "key : $id : is valid" );
-        }
-        else {
-            $krec->{state} = 'error';
-            logerror( "key : $id : " . $sigrr->vrfyerrstr ) ;
-        }
     }
 
-    return $keystate ;
+    return $keyData ;
 
 }
 
-sub checkAllKeys {
+#
+# get all the existing trust anchors configured on the grid
+#
+# stored in the 'dnssec_trusted_keys()' part of the DNS settings
+#
+
+sub getAnchors {
     my ( $conf ) = @_ ;
-    my $resolver = getResolver( $conf );
 
-#     # [ ] 
-#     #     we're just testing for now
-#     discoKey( $conf , 'com' , $keyrr  ) ;
-# 
-#     #
-#     publishKey( $conf , 'com' , $keyrr );
-#
+    # called from loadGridConf()
 
-    # we have a bunch of nested loops here beaauce
-    # we're supporting lots of config levels
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
 
-    foreach my $level ( sort keys %{ $conf->{domains} } ) {    
-        foreach my $lname ( sort keys %{ $conf->{domains}{$level} } ) {    
-            foreach my $domain ( @{ $conf->{domains}{$level}{$lname} } ) {
-                logit( "Query keys for domain : $level : $lname : $domain" );
+    # We're ok, continue to configure the grid
+    my ( $gobj ) = $session->get(
+        object => "Infoblox::Grid::DNS",
+    );
+    getSessionErrors( $session ); 
 
-                # punt a domain to DNS, get back the state of all ids
-                my $validIDs = validateDomainKeys( $conf , $domain );
+    my $data = {};
+    # walk all the anchors, and index them by domain and digest
+    foreach my $gkey ( @{ $gobj->dnssec_trusted_keys() } ) {
 
-#                 print Dumper ( $validIDs );
+        my $alg = getAlgorithm ( $gkey->algorithm() );
+        my $k = $gkey->key();
+        my $domain = $gkey->fqdn();
 
-                checkState ( $conf , {
-                    level => $level,
-                    lvlname => $lname,
-                    domain => $domain,
-                    keys => $validIDs,
-                });
+        # generate a Net::DNS::RR so we can calculate the keyid
+        my $keyrr = new Net::DNS::RR("$domain DNSKEY 257 3 $alg $k");
 
-            }
-        }
+        my $id = $keyrr->keytag();
+
+        $data->{ $domain }{ $id } = $gkey ;
     }
 
-    return ;
-
-}
-
-#
-# compare the state of a set of key IDs with what we have in our config
-#
-
-sub checkState {
-    my ( $conf , $args ) = @_ ;
-
-    print Dumper ( (caller(0))[3] , $args ) if $DEBUG ;
-
-    my $domain = $args->{domain};
-    my $level = $args->{level};
-    my $lname = $args->{lvlname};
-
-# the statemachine
-#
-# Add Hold down time == 30 days ( 2592000 seconds )
-# Remove Hold down time == 30 days 
-#
-# Any new 'Valid' keys can be published
-# Any new 'Revoked' keys can be discoed
-# anything else is just a flag in the database
-# 
-#     The key has not or ever been seen
-# Start -> AddPend : if valid DNSKEY in RRSet with a new SEP key
-# 
-#     Wait until publishing
-# AddPend -> Start : if key in not in valid DNSKEY RRSet
-#         -> Valid : if key is in a valid RRSet after the 'add time'
-#                    and it is still valid in the rrset
-# 
-#     You can publish this key
-# Valid -> Missing : if key in not in valid DNSKEY RRSet
-#       -> Revoked : if key has "REVOKED" bit set
-# 
-#     The key went missing without being revoked (abnormal state)
-#     Continue to publish this key
-# Missing -> Valid : if key is in valid DNSKEY RRSet
-#         -> Revoked : if key has "REVOKED" bit set 
-# 
-#     DO NOT publish this key
-# Revoked -> Removed : if revoked key is not in RRSet for 30 days
-# 
-#     DO NOT publish this key, and never re-publish this key
-#     remove it from the database 30 days after it was 'removed'
-#   Removed -> /dev/null
-# And a removed key is no-longer of concern
-
-    my $gdata = $conf->{keys}{$level}{$lname}{$domain};
-
-    # a keytag could have changed if it was revoked, so we have to
-    # create a new index of the keys based on their 'keyid'
-
-    my $validKeyIDs = { map { $_->{rdata}->keyid => $_ } 
-            values %{ $args->{keys} } };
-
-    # $validKeyIDs is now a HASHREF with the state for each ID
-    # and the Net::DNS::RR::DNSKEY record
-
-    # [ ] we should walk the keys we know about (on the grid)
-    #    since this is the last KNOWN state
-    # and compare them to the keys we just queried
-
-
-    foreach my $id ( keys %{ $validKeyIDs } ) {
-
-        my $grec = $gdata->{$id};
-        my $krec = $validKeyIDs->{$id};
-        my $kstate = $krec->{state};
-
-        # identify new keys
-        unless ( $grec ) {
-            # [ ] this key is unknown to us...
-            # send it to the pending queue
-            logit( "state : $id : start -> pending");
-            next ;
-        }
-        
-        # ignore things that don't change
-        if ( $grec->{state} eq $kstate ) {
-            logit( "state : $id : no change");
-            next ;
-        }
-
-        # cache some expire timers
-        my $addendtime = $grec->{time} + $conf->{holdaddtime};
-        my $remendtime = $grec->{time} + $conf->{holdremtime};
-
-        # N: we are always comparing:
-        #     LAST KNOWN STATE <=> Current state
-
-        # revoked and removed keys may not be in the $validKeyIDs
-        # we need to identify them some other way..
-
-        # check pending keys
-        if ( $grec->{state} eq 'pending' ) {
-
-            if ( $kstate eq 'valid' ) {
-                # release from the timers
-                if ( time() > $addendtime ) {
-                    logit( "state : $id : pending -> valid : offhold");
-                    $grec->{state} = 'valid';
-
-                    print Dumper ( $grec ) if $DEBUG > 1 ;
-#                     print Dumper ( $grec );
-
-                    updateKey( $conf , $grec );
-                    publishKey( $conf , $domain , $krec->{rdata} );
-
-                }
-                else {
-                    logit( "state : $id : pending -> onhold");
-                }
-            }
-            else {
-                logerror( "state : $id : unknown pending -> $kstate");
-            }
-
-            next;
-        }
-
-#         if ( $grec->{state} eq 'revoked' ) {
-#             # just remove it as a trust anchor
-#                 if ( time() > $remendtime ) {
-#                     logit( "state : $id : revoked -> removed");
-#                     # [ ] update this RR
-#                 }
-#         }
-
-#         if ( $grec->{state} eq 'removed' ) {
-#                 if ( time() > $remendtime ) {
-#                     logit( "state : $id : removed -> trash");
-#                     # [ ] delete this RR
-#                 }
-#         }
-# 
-
-    }
-
-    # [ ] then walk any dangling keys on the grid
-
-#     print Dumper ( $args );
-
-#                 # see if we already know about it..
-#                 unless ( $conf->{keys}{$domain}{$id} ) {
-# 
-#                     # [ ] 
-#                     my $level = 'grid';
-#                     addKey( $conf , {
-#                         domain => $domain,
-#                         id => $id,
-#                         level => $level,
-#                         lvlname => $level,
-#                         info => "",
-#                     });
-# 
-#                     $conf->{keys}{$domain}{$id}{ongrid} = 'new'
-#                 }
-# 
-#                 # and add the dnsinfo to the config
-#                 $conf->{keys}{$domain}{$id}{query} = "ok";
-#                 $conf->{keys}{$domain}{$id}{rr} = {
-#                     flags => $rr->flags(),
-#                     sep => $rr->sep(),
-#                     # we need the WHOLE key for the trust anchor
-#                     key => $rr->key(),
-#                     # and keep an MD5 sum for repairs and regex
-#                     digest => md5_base64 ( $rr->key() ),
-#                     algorithm => $rr->algorithm(),
-# #                     key => substr($rr->key(), -8, 8),
-#                     private => $rr->privatekeyname(),
-#                     tag => $rr->keyid(),
-#                 }
+    return ( $data , $gobj );
 
 }
 
@@ -1681,7 +1902,7 @@ sub logit {
 
 =head1 DIAGNOSTICS
 
-Use '-d N' to run at different riagnostic/debug levels
+Use '-d N' to run at different diagnostic/debug levels
 
 The higher the number, the more feedback you get
 
@@ -1699,23 +1920,26 @@ The higher the number, the more feedback you get
 
 =back
 
-
 =head1 DEPENDENCIES
 
-=for author to fill in:
-    A list of all the other modules that this module relies upon,
-    including any restrictions on versions, and an indication whether
-    the module is part of the standard Perl distribution, part of the
-    module's distribution, or must be installed separately. ]
-
-None.
-
+ Storable
+ Net::DNS, Net::DNS::Sec
+ Infoblox.pm
+ Digest::MD5
 
 =head1 INCOMPATIBILITIES
 
-I have not yet thought through incompatibilities, though there are
+Not all algorithms are supported, as a manual lookup table is required to
+convert beteen public and Infoblox supported algorithms
+
+Unicode may be a problem, dependong on the domain name being added as
+SEP.
+
+I have not yet thought through other incompatibilities, though there are
 most certainly some. I don't like code that is longer than 72 characters
 per line, you may hate me for that.
+
+
 
 =head1 BUGS 
 
