@@ -31,6 +31,45 @@ Capstan
 
 [ ] publish to github
 
+[ ] testing
+    [t] bad DNS resolver
+        ./capstan.pl
+
+    [t] add a domain
+        [t] add domain with 1 key
+        [t] add domain with all keys
+        ./capstan.pl -a org -x 208.69.40.3
+
+    [t] remove a domain
+        ./capstan.pl -r org 
+
+    [t] publish pending keys
+        [t] no domains configured
+        [t] some domains configured
+        ./capstan.pl -x 208.69.40.3
+
+    [x] create some fake events...
+        [ ] need a '-t miss|add|revoke|remove' hidden command
+
+    [t] track a missing key
+        ./capstan.pl -x 208.69.40.3 -t miss
+    [t] add a new key
+        [x] remove a new key
+        ./capstan.pl -x 208.69.40.3 -t new
+        ./capstan.pl -x 208.69.40.3
+
+    [x] revoke a key
+        ./capstan.pl -x 208.69.40.3 -t revoke
+         id : 9795
+        
+    [x] remove a key
+        ./capstan.pl -x 208.69.40.3 -t remove
+
+    [x] delete a key
+        ./capstan.pl -x 208.69.40.3 -t remove
+
+
+
 [x] digests and tags
     the keytag could be calcuated and used instead of the digest
     But the tag changes if the key is revoked (as it's calculated from

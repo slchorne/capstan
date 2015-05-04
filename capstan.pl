@@ -69,6 +69,7 @@ my $LISTKEYS;
 my $DEBUG ;
 my $NOOP ;
 my $FORCE ;
+my $TESTSTATE ; # just for testing
 my $XRES ; # dummy test offline resolver
 
 # DO NOT SET ANY OTHER GLOBALS, here or anywhere near here
@@ -96,7 +97,8 @@ my $ores = GetOptions (
 
     "d=s"     => \$DEBUG,
     "n"       => \$NOOP,
-    "x=s"     => \$XRES, # local test hack
+    "x=s"     => \$XRES,      # local test hack
+    "t=s"     => \$TESTSTATE, # local test hack
 );
 
 exit unless $ores;
@@ -395,13 +397,11 @@ sub addKey {
 # modify a key
 #
 sub updateKey {
-    my ( $conf , $rec ) = @_ ;
+    my ( $conf , $rec , $keyrr ) = @_ ;
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
     return unless $session ;
-
-    my $tag = $rec->{id};
 
     # add the domain to be tracked
     my $fqdn = join ( "." , $rec->{gid}, 'key',
@@ -423,7 +423,11 @@ sub updateKey {
 
     return unless $tobj ;
 
-    $tobj->text( "domain:$rec->{domain} tag:$tag loc:$rec->{level}" );
+    # only change the TXT if we have valid data
+    if ( $keyrr ) {
+        my $tag = $keyrr->keytag();
+        $tobj->text( "domain:$rec->{domain} tag:$tag loc:$rec->{level}" );
+    }
     my $exts = $tobj->extensible_attributes();
     $exts->{RFC5011Time} = time() ;
     $exts->{RFC5011State} = $rec->{state} ;
@@ -496,7 +500,7 @@ sub publishKey {
 
     #
     # avoid race conditions with the config, and 
-    # just call getAnchors();
+    # just call getAnchors(); ( but we don't use the $anchors hash )
     my ( $anchors , $gobj ) = getAnchors( $conf );
 
     return undef unless $gobj ;
@@ -539,6 +543,10 @@ sub discoKey {
     my $session = startSession( $conf );  
     return unless $session ;
 
+    # Any keys on the grid are valid and NOT revoked, so the ONLY
+    # way we can match is to take whatever key we were given, and
+    # calculate the unrevoked tag
+    $keyrr->revoke(0);
     my $id = $keyrr->keytag();
 
     logit( "UnTrusting key $id for $domain");
@@ -551,20 +559,29 @@ sub discoKey {
     # avoiding race conditions.
     #
     # So just pull them again from the grid
-    #
+    # these are indexed by domain and ID, ( to avoid conflicts )
+    # $keyrr
+    #     'com' => {
+    #       '30909' => {
+    #     'org' => {
+    #       '21366' => ...
 
     my ( $anchors , $gobj ) = getAnchors( $conf );
+
+    print Dumper ( (caller(0))[3] , $anchors ) if $DEBUG ;
 
     # now just walk this index, and remove the key we want
 
     my $newkeys = [];
 
-    foreach my $atag ( keys %{ $anchors } ) {
-        if ( $atag == $id ) {
-            logit( "Removing $domain $id" );
-        }
-        else {
-            push @{ $newkeys } , $anchors->{$atag} ;
+    foreach my $dom ( keys %{ $anchors } ) {
+        foreach my $atag ( keys %{ $anchors->{$dom} } ) {
+            if ( $dom eq $domain && $atag == $id ) {
+                logit( "Removing $domain $id" );
+            }
+            else {
+                push @{ $newkeys } , $anchors->{$dom}{$atag} ;
+            }
         }
     }
 
@@ -819,8 +836,13 @@ sub querybyType {
     logit( "Querying $fqdn for $type");
     # get ALL the DNSKEYS for this domain
     my $rrs = $resolver->send($fqdn , $type, "IN");
-    # $query is a a "Net::DNS::Packet" object
-    if ( ! $rrs ) {
+
+#     say $resolver->errorstring;
+#     say $rrs->answer;
+
+    # $query is a a "Net::DNS::Packet" object, ALWAYS returned
+    # Check if ->answer is undef for errors
+    if ( ! $rrs->answer ) {
         # we got an error
         logerror( "$type query : $fqdn : " . $resolver->errorstring );
     }
@@ -888,7 +910,8 @@ sub validateDomainKeys {
 
     return undef unless @allkeys ;
 
-    # get all the signatures, indexed by id
+    # get all the signatures, indexed by keytag
+    # we use the KEYTAG so we can match them to keys
     my $sigindex = queryAndIndexSigs( $conf , $domain );
 
     my $keystate = {};
@@ -898,23 +921,23 @@ sub validateDomainKeys {
         next unless $keyrr->sep();
 
         # keep all the dnsinfo, track state
-        my $id = $keyrr->keytag();
-        $keystate->{$id} = {
+        my $tag = $keyrr->keytag();
+        $keystate->{$tag} = {
             rdata => $keyrr,
             state => undef ,
         };
-        my $krec = $keystate->{$id};
+        my $krec = $keystate->{$tag};
 
         if ( $keyrr->revoke() ) {
-            logit( "key : $id : revoked" );
+            logit( "key : tag $tag : revoked" );
             $krec->{state} = 'revoked';
             next ;
         }
 
-        my $sigrr = $sigindex->{ $id };
+        my $sigrr = $sigindex->{ $tag };
 
         unless ( $sigrr ) {
-            logit( "No RRSIG for id $id found");
+            logit( "No RRSIG for tag $tag found");
             $krec->{state} = 'nosig';
             next ;
         }
@@ -924,12 +947,18 @@ sub validateDomainKeys {
         # now try and verify this signature with our orignal key
         if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
             $krec->{state} = 'valid';
-            logit( "key : $id : is valid" );
+            logit( "key : tag $tag : is valid" );
         }
         else {
             $krec->{state} = 'error';
-            logerror( "key : $id : " . $sigrr->vrfyerrstr ) ;
+            logerror( "key : tag $tag : " . $sigrr->vrfyerrstr ) ;
         }
+    }
+
+    # now, for testing, we may inject or remove some keys
+    # This is kinda hardcoded for now
+    if ( $TESTSTATE ) {
+        $keystate = setFakeKeys( $TESTSTATE , $keystate )
     }
 
     return $keystate ;
@@ -947,6 +976,11 @@ sub checkAllKeys {
 
     # we have a bunch of nested loops here beaauce
     # we're supporting lots of config levels
+
+    unless ( $conf->{domains} ) {
+        logwarn( "No domains currently being tracked");
+        return ;
+    }
 
     foreach my $level ( sort keys %{ $conf->{domains} } ) {    
         foreach my $lname ( sort keys %{ $conf->{domains}{$level} } ) {    
@@ -1037,7 +1071,7 @@ sub checkState {
 #         'org' => {
 #           '20334' => {
 #             'domain' => 'org',
-#             'id' => '20334',
+#             'gid' => '20334',
 #             'level' => 'grid',
 #             'lvlname' => 'default',
 #             'state' => 'pending',
@@ -1045,7 +1079,7 @@ sub checkState {
 #           },
 #           '8763' => {
 #             'domain' => 'org',
-#             'id' => '8763',
+#             'gid' => '8763',
 #             'level' => 'grid',
 #             'lvlname' => 'default',
 #             'state' => 'valid',
@@ -1074,28 +1108,33 @@ sub checkState {
     # and compare them to the keys we just queried
 
 
-    foreach my $id ( keys %{ $gdata } ) {
+    foreach my $id ( sort {$a <=> $b} keys %{ $gdata } ) {
 
         my $grec = $gdata->{$id};
-        my $krec = $validKeyIDs->{$id};
-        my $kstate = $krec->{state};
         my $gstate = $grec->{state};
+
+        # be careful here, or we create a record we don't want
+        my $krec;
+        my $kstate;
+        if ( $validKeyIDs->{$id} ) {
+            $krec = $validKeyIDs->{$id};
+            $kstate = $krec->{state};
+        }
 
         # N: we are always comparing:
         #     LAST KNOWN STATE <=> Current state
-
-        # ignore things that don't change
-        if ( $gstate eq $kstate ) {
-            logit( "state : $id : no change");
-            next ;
-        }
 
         # cache some expire timers
         my $addendtime = $grec->{time} + $conf->{holdaddtime};
         my $remendtime = $grec->{time} + $conf->{holdremtime};
 
+        # ignore things that don't change
+        if ( $gstate eq $kstate ) {
+            logit( "state : $id : no change");
+        }
+
         # check pending keys
-        if ( $gstate eq 'pending' ) {
+        elsif ( $gstate eq 'pending' ) {
 
             unless ( $krec ) {
                 # the key went away, do nothing unless we are out of time
@@ -1110,7 +1149,7 @@ sub checkState {
                 # added as pending, the the timer will get re-set at that
                 # time
 
-                next
+                next;
             }
 
             if ( $kstate eq 'valid' ) {
@@ -1122,7 +1161,7 @@ sub checkState {
                     print Dumper ( $grec ) if $DEBUG > 1 ;
 #                     print Dumper ( $grec );
 
-                    updateKey( $conf , $grec );
+                    updateKey( $conf , $grec , $krec->{rdata} );
                     publishKey( $conf , $domain , $krec->{rdata} );
 
                 }
@@ -1136,13 +1175,13 @@ sub checkState {
                 logerror( "state : $id : unknown pending -> $kstate");
             }
 
-            next;
         }
 
         # [ ] missing
-        if ( $gstate eq 'missing' ) {
+        elsif ( $gstate eq 'missing' ) {
             unless ( $krec ) {
-                # it's still missing
+                # it's still missing ???
+                logwarn( "state : $id : missing -> missing : revoke ?");
                 next ;
             }
 
@@ -1150,14 +1189,14 @@ sub checkState {
                 # abnormal case, just track it
                 logit( "state : $id : missing -> valid");
                 $grec->{state} = 'valid';
-                updateKey( $conf , $grec );
+                updateKey( $conf , $grec , $krec->{rdata} );
             }
             elsif ( $kstate eq 'revoked' ) {
                 logit( "state : $id : missing -> revoked");
 
                 # this is no longer a trust anchor
                 $grec->{state} = 'revoked';
-                updateKey( $conf , $grec );
+                updateKey( $conf , $grec , $krec->{rdata} );
                 discoKey( $conf , $domain , $krec->{rdata} );
             }
             else {
@@ -1167,7 +1206,8 @@ sub checkState {
         }
 
         # [ ] Valid
-        if ( $gstate eq 'valid' ) {
+        elsif ( $gstate eq 'valid' ) {
+
             unless ( $krec ) {
                 # the key went away, without being revoked.
                 # [ ] the RFC doesn't say what to do, just track it
@@ -1181,10 +1221,10 @@ sub checkState {
             if ( $kstate eq 'revoked' ) {
                 logit( "state : $id : valid -> revoked");
 
-                # this is no longer a trust anchor, and the keytg changed
+                # this is no longer a trust anchor, and the keytag changed
                 $grec->{id} = $krec->{rdata}->keytag(),
                 $grec->{state} = 'revoked';
-                updateKey( $conf , $grec );
+                updateKey( $conf , $grec , $krec->{rdata} );
                 discoKey( $conf , $domain , $krec->{rdata} );
             }
             else {
@@ -1192,11 +1232,10 @@ sub checkState {
                 logerror( "state : $id : unknown valid -> $kstate");
             }
 
-            next ;
         }
 
         # [ ] Revoked
-        if ( $gstate eq 'revoked' ) {
+        elsif ( $gstate eq 'revoked' ) {
             if ( $kstate ) {
                 # a revoked key became valid !!
                 logerror( "state : $id : unknown revoked -> $kstate");
@@ -1210,7 +1249,7 @@ sub checkState {
         }
 
         # [ ] Removed
-        if ( $gstate eq 'removed' ) {
+        elsif ( $gstate eq 'removed' ) {
             if ( $kstate ) {
                 # a removed key came back ??
                 logerror( "state : $id : unknown removed -> $kstate");
@@ -1224,17 +1263,25 @@ sub checkState {
             }
         }
 
+        else {
+            # if we get to here, we got an unknown condition
+            logerror( "state : $id : unknown state : $gstate");
+        }
+
+        # FINALLY, remove this valid key from the list
+        delete $validKeyIDs->{$id} if $validKeyIDs->{$id} ;
+
     }
 
     # [ ] then walk any dangling keys from the query
     # any remaining keys in the $validKeyIDs index are new to us
     # and should just be added as pending
 
-    foreach my $id ( keys %{ $validKeyIDs } ) {
+    foreach my $id ( sort {$a <=> $b} keys %{ $validKeyIDs } ) {
     
         # send it to the pending queue
         # [ ] :
-        logit( "state : $id : start -> pending");
+        logit( "newkey : $id : start -> pending");
 
         my $krec = $validKeyIDs->{$id};
 
@@ -1394,9 +1441,10 @@ sub setUser {
     unless ( $password ) {
         # just prompt for a username
         print "\nEnter password for user $user: ";
-        ReadMode 2;
+        ReadMode('noecho');
         chomp($password=<STDIN>);
-        ReadMode 0;
+        ReadMode('restore');
+
         print "\n";
     }
 
@@ -1805,7 +1853,7 @@ sub getKeys {
 #         $keyData->{$domain}{$id}{ongrid} = 'true';
         $keyData->{$level}{$loc}{$domain}{$id} = {
             domain => $domain,
-            id => $id,
+            gid => $id,
             level => $level,
             lvlname => $loc,
             time => getAttributes( $kobj , 'RFC5011Time' ),
@@ -2065,7 +2113,80 @@ Copyright (c) 2015, Geoff Horne, SLC . All rights reserved.
 
 ####################################################
 
+sub setFakeKeys {
+    my ( $state , $keydata ) = @_;
+
+    # $keydata is a HASH.
+    # usually we can just modify one of the keys
+    my ( $tag ) = sort {$a<=>$b} keys %{ $keydata } ;
+
+    logwarn( "TEST : $state keys for tag $tag" );
+
+    if ( $state =~ /miss|remove/i ) {
+        logwarn( "TEST : hide key $tag");
+        delete $keydata->{$tag};
+    }
+
+    elsif ( $state =~ /revoke/i ) {
+        logwarn( "TEST : revoke key $tag");
+        $keydata->{$tag}{rdata}->revoke(1);
+        $keydata->{$tag}{state} = 'revoked';
+    }
+
+    elsif ( $state =~ /add|new/i ) {
+        # insert a new valid key
+
+        my $nkey = fakenewkey();
+        my $kid = $nkey->keytag();
+        logwarn( "TEST : add key $kid");
+        $keydata->{$kid} = {
+            rdata => $nkey,
+            state => 'valid',
+        }
+#         print Dumper ( $keydata );
+#         exit ;
+    }
+
+
+
+    return $keydata ;
+
+}
+
+sub fakenewkey {
+#                 ) ; key id = 30909
+    my $comkey = '
+    DNSKEY  257 3 8 (
+        AQPDzldNmMvZFX4NcNJ0uEnKDg7tmv/F3MyQR0lpBmVc
+        NcsIszxNFxsBfKNW9JYCYqpik8366LE7VbIcNRzfp2h9
+        OO8HRl+H+E08zauK8k7evWEmu/6od+2boggPoiEfGNyv
+        NPaSI7FOIroDsnw/taggzHRX1Z7SOiOiPWPNIwSUyWOZ
+        79VmcQ1GLkC6NlYvG3HwYmynQv6oFwGv/KELSw7ZSdrb
+        TQ0HXvZbqMUI7BaMskmvgm1G7oKZ1YiF7O9ioVNc0+7A
+        SbqmZN7Z98EGU/Qh2K/BgUe8Hs0XVcdPKrtyYnoQHd2y
+        nKPcMMlTEih2/2HDHjRPJ2aywIpKNnv4oPo/
+    ';
+
+    my $keyrr = new Net::DNS::RR("org $comkey");
+
+    return $keyrr ;
+
+}
+
 sub fakedns {
+
+#                 ) ; key id = 30909
+    my $comkey = '
+    DNSKEY  257 3 8 (
+        AQPDzldNmMvZFX4NcNJ0uEnKDg7tmv/F3MyQR0lpBmVc
+        NcsIszxNFxsBfKNW9JYCYqpik8366LE7VbIcNRzfp2h9
+        OO8HRl+H+E08zauK8k7evWEmu/6od+2boggPoiEfGNyv
+        NPaSI7FOIroDsnw/taggzHRX1Z7SOiOiPWPNIwSUyWOZ
+        79VmcQ1GLkC6NlYvG3HwYmynQv6oFwGv/KELSw7ZSdrb
+        TQ0HXvZbqMUI7BaMskmvgm1G7oKZ1YiF7O9ioVNc0+7A
+        SbqmZN7Z98EGU/Qh2K/BgUe8Hs0XVcdPKrtyYnoQHd2y
+        nKPcMMlTEih2/2HDHjRPJ2aywIpKNnv4oPo/
+    ';
 
 #                 ) ; key id = 9795
     my $ak = '
