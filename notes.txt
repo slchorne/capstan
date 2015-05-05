@@ -31,7 +31,7 @@ Capstan
 
 [ ] publish to github
 
-[ ] testing
+[x] testing
     [t] bad DNS resolver
         ./capstan.pl
 
@@ -49,26 +49,27 @@ Capstan
         ./capstan.pl -x 208.69.40.3
 
     [x] create some fake events...
-        [ ] need a '-t miss|add|revoke|remove' hidden command
+        [x] need a '-w miss|add|revoke|remove' hidden command
 
     [t] track a missing key
-        ./capstan.pl -x 208.69.40.3 -t miss
+        ./capstan.pl -x 208.69.40.3 -w miss
     [t] add a new key
         [x] remove a new key
-        ./capstan.pl -x 208.69.40.3 -t new
+        ./capstan.pl -x 208.69.40.3 -w new
         ./capstan.pl -x 208.69.40.3
 
     [x] revoke a key
-        ./capstan.pl -x 208.69.40.3 -t revoke
+        ./capstan.pl -x 208.69.40.3 -w revoke
          id : 9795
         
     [x] remove a key
-        ./capstan.pl -x 208.69.40.3 -t remove
+        ./capstan.pl -x 208.69.40.3 -w remove
 
     [x] delete a key
-        ./capstan.pl -x 208.69.40.3 -t remove
+        ./capstan.pl -x 208.69.40.3 -w remove
 
-
+    [ ] invalid key
+        ./capstan.pl -x 208.69.40.3 -w invalid
 
 [x] digests and tags
     the keytag could be calcuated and used instead of the digest
@@ -91,7 +92,7 @@ Capstan
     [x] --init  # initialise the zone, storage etc
     [x] -C  # show the config
 
-    [ ] -ns  # set the Nameserver member
+    [x] -ns  # set the Nameserver member
              # and list all members if none set
 
     [ ] -p  # passive, don't restart services
@@ -107,6 +108,9 @@ Capstan
     [x] -l  # list domains
     [x] -k  # list all key states
     [x] --user   # add/configure the login account
+
+    [x] -x n.n.n.n use different resolver
+    [x] -w <state> fake DNS states on RRs
 
 [x] add a domain
     You must bootstrap a domain with a known key
@@ -125,8 +129,16 @@ Capstan
     [x] validate a sig by the matching key
     [x] use the keytag (id) to match key <-> signature
 
+    [ ] revoked keys still need to be valid
     [ ] and always validate from known KEYS only.
     [ ] never add a key that wasn't checked by a trusted key
+
+    [ ] So... if an invalid key is in the RRset,
+        ALL but one of the signatures will fail.
+        And the NEW/BAD set will pass...
+
+    [ ] ANY failed signature for a trusted key,
+        invalidates the whole SET
 
 [ ] grid or MEMBER level anchors, not views ?
     [x] how to set the location ?
@@ -202,13 +214,13 @@ risk someone replacing with data with bad data
         "Given that the minimum refresh time is one hour, such a fixed
         interval should be one hour in order to conform to the RFC"
 
-[ ] pending keys get stored in the dataset until they are considered valid
+[x] pending keys get stored in the dataset until they are considered valid
     [x] just follow the rules of the statemachine
 
-[ ] revoking keys - 
-    [ ] a revoked key must still be in the signed list
+[x] revoking keys - 
+    [x] a revoked key must still be in the signed list
         ( as this is how the owner verifies this key )
-        [ ] revoked key must pass validation
+        [x] revoked key must pass validation
     [x] check statemachine for revokation rules
 
 [-] can't use a pure-perl net::dns::sec - will be platform dependent. ?

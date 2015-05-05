@@ -54,6 +54,7 @@ my %ALGLOOK = reverse @ALGBYNUM ;
 
 my $GRIDMASTER ;
 my $MEMBER ;
+my $NAMESERVER ;
 my $USER ;
 my $PASS ;
 
@@ -65,6 +66,8 @@ my $ADD;
 my $REMOVE;
 my $LISTDOMAINS;
 my $LISTKEYS;
+my $TESTKEYS;
+my $PASSIVE;
 
 my $DEBUG ;
 my $NOOP ;
@@ -82,13 +85,16 @@ my $ores = GetOptions (
 #     "V|version"    => sub { print "\n$ID\n$REV\n\n"; exit ; },
     "gm=s"      => \$GRIDMASTER,
     "m=s"       => \$MEMBER,
-    "u|user=s"  => \$USER,
-    "p=s"       => \$PASS,
+    "ns=s"       => \$NAMESERVER,
+    "u|user=s"   => \$USER,
+    "pass=s"     => \$PASS,
 
     "a=s"     => \$ADD,
     "r=s"     => \$REMOVE,
     "l"       => \$LISTDOMAINS,
     "k"       => \$LISTKEYS,
+    "p"       => \$PASSIVE,
+    "t"       => \$TESTKEYS,
 
     "C"       => \$SHOWCONFIG,
     "c"       => \$SHOWLOCALCONFIG,
@@ -96,9 +102,9 @@ my $ores = GetOptions (
     "f"       => \$FORCE,
 
     "d=s"     => \$DEBUG,
-    "n"       => \$NOOP,
+    "n"       => \$NOOP,      # GN:DN
     "x=s"     => \$XRES,      # local test hack
-    "t=s"     => \$TESTSTATE, # local test hack
+    "w=s"     => \$TESTSTATE, # local test hack
 );
 
 exit unless $ores;
@@ -135,7 +141,7 @@ capstan : an implementation of RFC 5011 for Infoblox
   --init     Initialise the system (only runs once)
              requires --gm and --user
 
-  -m <name>  Set the query nameserver to this member
+  -ns <name>  Set the query nameserver to this member
   --user     Set the username (and password) for login
 
 =head1 DESCRIPTION
@@ -166,7 +172,7 @@ my $conf = loadLocalConfig() or exit;
 # do some local config settings and exit early
 setUser( $conf , $USER ) && exit if $USER ;
 setMaster( $conf , $GRIDMASTER ) && exit if $GRIDMASTER ;
-setMember( $conf , $MEMBER ) && exit if $MEMBER ;
+setMemberNS( $conf , $NAMESERVER ) && exit if $NAMESERVER ;
 
 # now talk to the grid and get the systemwide configuration
 # to add to the config
@@ -196,6 +202,11 @@ listKeys( $conf ) && exit if $LISTKEYS ;
 
 checkAllKeys( $conf );
 
+#
+# lastly, we don't know what happened, so we kick a restart just for
+# grins
+#
+restartServices( $conf ) unless $PASSIVE ;
 
 exit ;
 
@@ -934,6 +945,7 @@ sub validateDomainKeys {
             next ;
         }
 
+        # find the signature for this key
         my $sigrr = $sigindex->{ $tag };
 
         unless ( $sigrr ) {
@@ -945,6 +957,7 @@ sub validateDomainKeys {
         # [ ] is a revoked key valid ??
 
         # now try and verify this signature with our orignal key
+        # even revoked keys are valid in this context
         if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
             $krec->{state} = 'valid';
             logit( "key : tag $tag : is valid" );
@@ -992,6 +1005,8 @@ sub checkAllKeys {
 
                 # punt a domain to DNS, get back the state of all ids
                 my $validIDs = validateDomainKeys( $conf , $domain );
+
+                next unless $validIDs ;
 
 # Step 2 , 
 #   compare all keys on the grid to all keys in DNS,
@@ -1319,7 +1334,7 @@ queries for the domains being managed by this utility.
 # OR list All members if it wasn't found
 # also remove the EA from any other member
 #
-sub setMember {
+sub setMemberNS {
     my ( $conf , $member ) = @_ ;
 
     my $session = startSession( $conf );  
@@ -1911,6 +1926,20 @@ sub getAnchors {
 #
 # session handling
 #
+
+sub restartServices {
+    my ( $conf ) = @_ ;
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    logit("Requesting DNS service restart");
+    # just kick it
+    $session->restart(
+        service => 'dns',
+    );
+
+}
+
 sub startSession {
     my ( $conf ) = @_ ;
 
