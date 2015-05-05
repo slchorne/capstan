@@ -363,6 +363,8 @@ sub delDomain {
 sub addKey {
     my ( $conf , $rec ) = @_ ;
 
+    return if $TESTKEYS ;
+
     # we have to set some defaults of the PAII will choke on
     # invalid/blank EA values
     my $id = $rec->{id};
@@ -409,6 +411,8 @@ sub addKey {
 #
 sub updateKey {
     my ( $conf , $rec , $keyrr ) = @_ ;
+
+    return if $TESTKEYS ;
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
@@ -457,6 +461,8 @@ sub updateKey {
 sub removeKey {
     my ( $conf , $rec ) = @_ ;
 
+    return if $TESTKEYS ;
+
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
     return unless $session ;
@@ -500,6 +506,8 @@ sub removeKey {
 # 
 sub publishKey {
     my ( $conf , $domain , $keyrr ) = @_ ;
+
+    return if $TESTKEYS ;
 
     my $id = $keyrr->keyid();
 
@@ -549,6 +557,8 @@ sub publishKey {
 # 
 sub discoKey {
     my ( $conf , $domain , $keyrr ) = @_ ;
+
+    return if $TESTKEYS ;
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
@@ -1131,10 +1141,17 @@ sub checkState {
         # be careful here, or we create a record we don't want
         my $krec;
         my $kstate;
+        my $tag = '000' ;
         if ( $validKeyIDs->{$id} ) {
             $krec = $validKeyIDs->{$id};
             $kstate = $krec->{state};
+            $tag = $krec->{rdata}->keytag();
+
+#             print Dumper ( $krec ) ;
         }
+
+        my $rrid = "$id tag[$tag]";
+
 
         # N: we are always comparing:
         #     LAST KNOWN STATE <=> Current state
@@ -1145,7 +1162,7 @@ sub checkState {
 
         # ignore things that don't change
         if ( $gstate eq $kstate ) {
-            logit( "state : $id : no change");
+            logit( "state : $rrid : no change");
         }
 
         # check pending keys
@@ -1154,7 +1171,7 @@ sub checkState {
             unless ( $krec ) {
                 # the key went away, do nothing unless we are out of time
                 if ( time() > $addendtime ) {
-                    logit( "state : $id : pending -> removed");
+                    logit( "state : $rrid : pending -> removed");
                     removeKey( $conf , $grec );
                 }
 
@@ -1170,7 +1187,7 @@ sub checkState {
             if ( $kstate eq 'valid' ) {
                 # release from the timers
                 if ( time() > $addendtime ) {
-                    logit( "state : $id : pending -> valid : offhold");
+                    logit( "state : $rrid : pending -> valid : offhold");
                     $grec->{state} = 'valid';
 
                     print Dumper ( $grec ) if $DEBUG > 1 ;
@@ -1182,12 +1199,12 @@ sub checkState {
                 }
                 else {
                     # it's valid but not ready yet
-                    logit( "state : $id : pending -> onhold");
+                    logit( "state : $rrid : pending -> onhold");
                 }
             }
             else {
                 # we should never get here
-                logerror( "state : $id : unknown pending -> $kstate");
+                logerror( "state : $rrid : unknown pending -> $kstate");
             }
 
         }
@@ -1196,18 +1213,18 @@ sub checkState {
         elsif ( $gstate eq 'missing' ) {
             unless ( $krec ) {
                 # it's still missing ???
-                logwarn( "state : $id : missing -> missing : revoke ?");
+                logwarn( "state : $rrid : missing -> missing : revoke ?");
                 next ;
             }
 
             if ( $kstate eq 'valid' ) {
                 # abnormal case, just track it
-                logit( "state : $id : missing -> valid");
+                logit( "state : $rrid : missing -> valid");
                 $grec->{state} = 'valid';
                 updateKey( $conf , $grec , $krec->{rdata} );
             }
             elsif ( $kstate eq 'revoked' ) {
-                logit( "state : $id : missing -> revoked");
+                logit( "state : $rrid : missing -> revoked");
 
                 # this is no longer a trust anchor
                 $grec->{state} = 'revoked';
@@ -1216,7 +1233,7 @@ sub checkState {
             }
             else {
                 # we should never get here
-                logerror( "state : $id : unknown missing -> $kstate");
+                logerror( "state : $rrid : unknown missing -> $kstate");
             }
         }
 
@@ -1226,7 +1243,7 @@ sub checkState {
             unless ( $krec ) {
                 # the key went away, without being revoked.
                 # [ ] the RFC doesn't say what to do, just track it
-                logwarn( "state : $id : valid -> missing");
+                logwarn( "state : $rrid : valid -> missing");
 #                 removeKey( $conf , $grec );
                 $grec->{state} = 'missing';
                 updateKey( $conf , $grec );
@@ -1234,7 +1251,7 @@ sub checkState {
             }
 
             if ( $kstate eq 'revoked' ) {
-                logit( "state : $id : valid -> revoked");
+                logit( "state : $rrid : valid -> revoked");
 
                 # this is no longer a trust anchor, and the keytag changed
                 $grec->{id} = $krec->{rdata}->keytag(),
@@ -1244,7 +1261,7 @@ sub checkState {
             }
             else {
                 # we should never get here
-                logerror( "state : $id : unknown valid -> $kstate");
+                logerror( "state : $rrid : unknown valid -> $kstate");
             }
 
         }
@@ -1253,11 +1270,11 @@ sub checkState {
         elsif ( $gstate eq 'revoked' ) {
             if ( $kstate ) {
                 # a revoked key became valid !!
-                logerror( "state : $id : unknown revoked -> $kstate");
+                logerror( "state : $rrid : unknown revoked -> $kstate");
             }
             else {
                 # the key was finally removed from the RRset
-                logit( "state : $id : revoked -> removed");
+                logit( "state : $rrid : revoked -> removed");
                 $grec->{state} = 'removed';
                 updateKey( $conf , $grec );
             }
@@ -1267,12 +1284,12 @@ sub checkState {
         elsif ( $gstate eq 'removed' ) {
             if ( $kstate ) {
                 # a removed key came back ??
-                logerror( "state : $id : unknown removed -> $kstate");
+                logerror( "state : $rrid : unknown removed -> $kstate");
             }
             else {
                 # the key was finally removed from the RRset
                 if ( time() > $remendtime ) {
-                    logit( "state : $id : removed -> delete");
+                    logit( "state : $rrid : removed -> delete");
                     removeKey( $conf , $grec );
                 }
             }
@@ -1280,7 +1297,7 @@ sub checkState {
 
         else {
             # if we get to here, we got an unknown condition
-            logerror( "state : $id : unknown state : $gstate");
+            logerror( "state : $rrid : unknown state : $gstate");
         }
 
         # FINALLY, remove this valid key from the list
