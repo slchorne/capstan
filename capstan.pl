@@ -93,6 +93,7 @@ my $ores = GetOptions (
     "r=s"     => \$REMOVE,
     "l"       => \$LISTDOMAINS,
     "k"       => \$LISTKEYS,
+#     "s"       => \$RESYNC,
     "p"       => \$PASSIVE,
     "t"       => \$TESTKEYS,
 
@@ -109,11 +110,6 @@ my $ores = GetOptions (
 
 exit unless $ores;
 
-#     [ ] -k  # list all key states
-#     [ ] -p  # passive, don't restart services
-#     [ ] -t  # test all key states ( doesn't modify database )
-#     [ ] -s  # re-sync all keys (quite the hammer)
-
 #######################################
 
 =head1 NAME
@@ -127,6 +123,8 @@ capstan : an implementation of RFC 5011 for Infoblox
   ./capstan.pl --init --gm my.grid.master --user admin
 
   ./capstan.pl -a org 
+  ./capstan.pl -a org -v internal
+  ./capstan.pl -a org -m ns1.myco.com
 
  Options:
 
@@ -854,7 +852,7 @@ sub querybyType {
     my ( $conf , $fqdn , $type ) = @_ ;
     my $resolver = getResolver( $conf );
 
-    logit( "Querying $fqdn for $type");
+    logit( "query : $fqdn : for $type");
     # get ALL the DNSKEYS for this domain
     my $rrs = $resolver->send($fqdn , $type, "IN");
 
@@ -925,7 +923,7 @@ sub queryAndIndexSigs {
 sub validateDomainKeys {
     my ( $conf , $domain ) = @_ ;
 
-    logit("Validating keys for $domain in DNS");
+    logit("validate : $domain : in DNS");
 
     my ( $idx, @allkeys ) = queryAndIndexKeys( $conf , $domain );
 
@@ -1014,7 +1012,7 @@ sub checkAllKeys {
     foreach my $level ( sort keys %{ $conf->{domains} } ) {    
         foreach my $lname ( sort keys %{ $conf->{domains}{$level} } ) {    
             foreach my $domain ( @{ $conf->{domains}{$level}{$lname} } ) {
-                logit( "Query keys for : $level : $lname : $domain" );
+                logit( "process keys : $level : $lname : $domain" );
 
 # Step 1 , 
 #    Query DNS for the current valid trust anchors and their state
@@ -1149,7 +1147,7 @@ sub checkState {
         my $grec = $gdata->{$id};
         my $gstate = $grec->{state};
 
-        # be careful here, or we create a record we don't want
+        # be careful here, or we create an rr record we don't want
         my $krec;
         my $kstate;
         my $tag = '000' ;
@@ -1182,7 +1180,7 @@ sub checkState {
             unless ( $krec ) {
                 # the key went away, do nothing unless we are out of time
                 if ( time() > $addendtime ) {
-                    logit( "state : $rrid : pending -> removed");
+                    logit( "state : $rrid : pending -> delete");
                     removeKey( $conf , $grec );
                 }
 
@@ -1629,7 +1627,7 @@ sub initConfig {
 sub loadGridConf {
     my ( $conf ) = @_ ;
 
-    logit( "Loading grid config..." );
+    logit( "Loading  grid config..." );
 
     # we're passed the config from disk with the login info
     # so now append to it...

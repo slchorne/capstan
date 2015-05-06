@@ -100,8 +100,19 @@ Capstan
 
     [x] -p  # passive, don't restart services
     [x] -t  # test all key states ( doesn't modify database )
-    [ ] -s  # re-sync all keys (quite the hammer)
+    [-] -s  # re-sync all keys (quite the hammer)
             # rebuilds from a dead/broken script
+
+        This mode isn't required since the normal state machine
+        just handles things correctly as it keys off the 
+        current trust anchors
+
+        worst case you add and remove the zones ?
+
+            # only active trust anchors are validated, 
+            # and any other revoked keys are kept
+            # any other keys are removed from the system
+
     [x] -a  # add a domain
 
     [ ] -v  # view ( add domain to just this view )
@@ -127,7 +138,7 @@ Capstan
 [x] need a nameserver to resolve the KSKs 
     [x] set an EA on one of the members.
 
-[ ] track missing keys
+[x] track missing keys
     count how long it has been missing
 
 [ ] validation
@@ -135,22 +146,27 @@ Capstan
     [x] validate a sig by the matching key
     [x] use the keytag (id) to match key <-> signature
 
-    [ ] revoked keys still need to be valid
-    [ ] and always validate from known KEYS only.
-    [ ] never add a key that wasn't checked by a trusted key
+    [x] revoked keys still need to be valid
 
-    [ ] So... if an invalid key is in the RRset,
-        ALL but one of the signatures will fail.
-        And the NEW/BAD set will pass...
+    [ ] always validate from known KEYS only.
+        [ ] never add a key that wasn't checked by a trusted key
+
+        [ ] So... if an invalid key is in the RRset,
+            ALL but one of the signatures will fail.
+            And the NEW/BAD set will pass...
+
+        [ ] So... if an invalid key is in the RRset,
+            and no valid key can validate the RRSET
+            is that new key invalid ?
 
     [ ] ANY failed signature for a trusted key,
-        invalidates the whole SET
+        invalidates the whole SET ?
 
     [ ] An invalid key is considered missing
         because it is not in the 'validated DNSKEY RRSet'
 
-    A key with no signature is invalid
-    A key that fails to validate the set is invalid
+    [ ] A key with no signature is invalid
+    [ ] A key that fails to validate the set is invalid
 
 [ ] grid or MEMBER level anchors, not views ?
     [x] how to set the location ?
