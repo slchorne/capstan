@@ -206,7 +206,7 @@ checkAllKeys( $conf );
 # lastly, we don't know what happened, so we kick a restart just for
 # grins
 #
-restartServices( $conf ) unless $PASSIVE ;
+restartServices( $conf ) ;
 
 exit ;
 
@@ -941,41 +941,47 @@ sub validateDomainKeys {
         # only track trust anchors
         next unless $keyrr->sep();
 
-        # keep all the dnsinfo, track state
+        # keep all the dnsinfo, track an initial state
         my $tag = $keyrr->keytag();
-        $keystate->{$tag} = {
+        my $krec = {
             rdata => $keyrr,
             state => undef ,
         };
-        my $krec = $keystate->{$tag};
 
-        if ( $keyrr->revoke() ) {
-            logit( "key : tag $tag : revoked" );
-            $krec->{state} = 'revoked';
-            next ;
-        }
+        # assume all keys are bad
+        my $invalidKey = 1 ;
 
         # find the signature for this key
         my $sigrr = $sigindex->{ $tag };
 
-        unless ( $sigrr ) {
-            logit( "No RRSIG for tag $tag found");
+        if ( ! $sigrr ) {
+            logit( "key : tag $tag : no RRSIG found" );
             $krec->{state} = 'nosig';
-            next ;
         }
-
-        # [ ] is a revoked key valid ??
 
         # now try and verify this signature with our orignal key
         # even revoked keys are valid in this context
-        if ( $sigrr->verify( \@allkeys , $keyrr ) ) {
+        elsif ( $sigrr->verify( \@allkeys , $keyrr ) ) {
+            $invalidKey = 0 ;
             $krec->{state} = 'valid';
             logit( "key : tag $tag : is valid" );
+
+            # revoked keys must still validate!!
+            if ( $keyrr->revoke() ) {
+                logit( "key : tag $tag : revoked" );
+                $krec->{state} = 'revoked';
+            }
         }
         else {
             $krec->{state} = 'error';
             logerror( "key : tag $tag : " . $sigrr->vrfyerrstr ) ;
         }
+
+        # valid keys we keep, anything else we drop from the
+        # validated DNSKEY RRSet
+        unless ( $invalidKey ) {
+            $keystate->{$tag} = $krec ;
+        };
     }
 
     # now, for testing, we may inject or remove some keys
@@ -1008,7 +1014,7 @@ sub checkAllKeys {
     foreach my $level ( sort keys %{ $conf->{domains} } ) {    
         foreach my $lname ( sort keys %{ $conf->{domains}{$level} } ) {    
             foreach my $domain ( @{ $conf->{domains}{$level}{$lname} } ) {
-                logit( "Query keys for domain : $level : $lname : $domain" );
+                logit( "Query keys for : $level : $lname : $domain" );
 
 # Step 1 , 
 #    Query DNS for the current valid trust anchors and their state
@@ -1016,6 +1022,7 @@ sub checkAllKeys {
                 # punt a domain to DNS, get back the state of all ids
                 my $validIDs = validateDomainKeys( $conf , $domain );
 
+                # if there was a DNS error, we don't return anything
                 next unless $validIDs ;
 
 # Step 2 , 
@@ -1051,6 +1058,10 @@ sub checkState {
     my $domain = $args->{domain};
     my $level = $args->{level};
     my $lname = $args->{lvlname};
+
+    if ( $TESTKEYS ) {
+        logwarn( "test mode : no config changes will be made" );
+    }
 
 # the statemachine
 #
@@ -1213,8 +1224,11 @@ sub checkState {
         elsif ( $gstate eq 'missing' ) {
             unless ( $krec ) {
                 # it's still missing ???
-                logwarn( "state : $rrid : missing -> missing : revoke ?");
+                my $mtime = time() - $grec->{time};
+#                 logwarn( "state : $rrid : missing -> missing : revoke ?");
+                logwarn( "state : $rrid : missing for $mtime secs : revoke ?");
                 next ;
+
             }
 
             if ( $kstate eq 'valid' ) {
@@ -1946,6 +1960,12 @@ sub getAnchors {
 
 sub restartServices {
     my ( $conf ) = @_ ;
+
+    if ( $PASSIVE ) {
+        logwarn("passive mode : no DNS service restart");
+        return ;
+    }
+
     my $session = startSession( $conf );  
     return unless $session ;
 

@@ -53,23 +53,26 @@ Capstan
 
     [t] track a missing key
         ./capstan.pl -x 208.69.40.3 -w miss
+
     [t] add a new key
         [x] remove a new key
         ./capstan.pl -x 208.69.40.3 -w new
         ./capstan.pl -x 208.69.40.3
 
-    [x] revoke a key
+    [t] revoke a key
         ./capstan.pl -x 208.69.40.3 -w revoke
          id : 9795
         
-    [x] remove a key
+    [t] remove a key
         ./capstan.pl -x 208.69.40.3 -w remove
 
-    [x] delete a key
-        ./capstan.pl -x 208.69.40.3 -w remove
+    [-] invalid key 
+        treated as missing
+        keystate == 'error'
 
-    [ ] invalid key
-        ./capstan.pl -x 208.69.40.3 -w invalid
+    [-] unsigned key 
+        treated as missing
+        keystate == 'nosig'
 
 [x] digests and tags
     the keytag could be calcuated and used instead of the digest
@@ -95,8 +98,8 @@ Capstan
     [x] -ns  # set the Nameserver member
              # and list all members if none set
 
-    [ ] -p  # passive, don't restart services
-    [ ] -t  # test all key states ( doesn't modify database )
+    [x] -p  # passive, don't restart services
+    [x] -t  # test all key states ( doesn't modify database )
     [ ] -s  # re-sync all keys (quite the hammer)
             # rebuilds from a dead/broken script
     [x] -a  # add a domain
@@ -124,6 +127,9 @@ Capstan
 [x] need a nameserver to resolve the KSKs 
     [x] set an EA on one of the members.
 
+[ ] track missing keys
+    count how long it has been missing
+
 [ ] validation
     [x] a RRSIG applies to all DNSKEYS
     [x] validate a sig by the matching key
@@ -139,6 +145,12 @@ Capstan
 
     [ ] ANY failed signature for a trusted key,
         invalidates the whole SET
+
+    [ ] An invalid key is considered missing
+        because it is not in the 'validated DNSKEY RRSet'
+
+    A key with no signature is invalid
+    A key that fails to validate the set is invalid
 
 [ ] grid or MEMBER level anchors, not views ?
     [x] how to set the location ?
