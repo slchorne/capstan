@@ -33,7 +33,7 @@ Capstan
 
 [ ] Re-do a test from scratch
 
-[ ] statemacine needs to detect invalid anchors
+[ ] statemachine needs to detect invalid anchors
     added via the GUI
     [ ] marks them as missing ??
 
@@ -43,11 +43,28 @@ Capstan
 
 [x] testing
 
-    basic test plan
+    basic test or demo plan
 
     ./capstan.pl --init --gm 10.64.128.20 --user admin --pass infoblox -f
     ./capstan.pl -a org -x 208.69.40.3
     ./capstan.pl -r org
+    ./capstan.pl -a org -x 208.69.40.3
+    ./capstan.pl -x 208.69.40.3
+        # wait 30 secs
+    ./capstan.pl -x 208.69.40.3
+        # remove one of the keys from the zone
+    ./capstan.pl -x 208.69.40.3
+        # wait 30 secs
+    ./capstan.pl -x 208.69.40.3
+    ./capstan.pl -x 208.69.40.3 -w new
+    ./capstan.pl -x 208.69.40.3
+    ./capstan.pl -x 208.69.40.3 -w revoke
+    ./capstan.pl -x 208.69.40.3 -w remove
+    ./capstan.pl -x 208.69.40.3 -w miss
+        # wait 30 secs
+    ./capstan.pl -x 208.69.40.3
+        # wait 30 secs
+    ./capstan.pl -x 208.69.40.3
 
     [t] bad DNS resolver
         ./capstan.pl

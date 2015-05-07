@@ -103,7 +103,7 @@ my $ores = GetOptions (
     "f"       => \$FORCE,
 
     "d=s"     => \$DEBUG,
-    "n"       => \$NOOP,      # GN:DN
+    "n"       => \$NOOP,      # GN;DN
     "x=s"     => \$XRES,      # local test hack
     "w=s"     => \$TESTSTATE, # local test hack
 );
@@ -244,7 +244,6 @@ sub addDomain {
     # we return any valid anchors for this domain as a list of IDs
     # and additonal keys we also found
 
-#     my ( $anchorids , @keys ) = validateAnchor( $conf , $domain );
     my $validIDs = validateDomainKeys( $conf , $domain );
 
     return 1 unless $validIDs ;
@@ -606,7 +605,7 @@ sub publishKey {
 #   disco(ontinue)Key
 # 
 sub discoKey {
-    my ( $conf , $domain , $keyrr ) = @_ ;
+    my ( $conf , $domain , $keyrr , $id ) = @_ ;
 
     return if $TESTKEYS ;
 
@@ -618,7 +617,7 @@ sub discoKey {
     # were trusting. So to compare it we use the GID, not the tag
     # ( as the tag changes when you revoke a key );
 
-    my $id = $keyrr->keyid();
+    $id = $keyrr->keyid() unless $id ;
 
     logit( "UnTrusting key $id for $domain");
 
@@ -631,7 +630,6 @@ sub discoKey {
 
     # So just pull them again from the grid
     # these are indexed by domain and GID, ( to avoid conflicts )
-    # $keyrr
     #     'com' => {
     #       '30909' => {
     #     'org' => {
@@ -735,139 +733,6 @@ sub listKeys {
 ######################################################
 #
 # DNS queries and resolver stuff handling
-#
-
-#
-# validate an anchor in the grid, compare it to DNS
-# 
-# return a list of valid ids, and all the DNS keys
-#
-
-sub validateAnchor {
-    my ( $conf , $domain ) = @_ ;
-
-    # when the config loaded, we got the current anchors from the grid
-    # and indexed them by their keyid.
-    # so we just use that data as the bootstrap point
-
-    my $anchors = $conf->{anchors}{$domain};
-    unless ( $anchors ) {
-        logerror( "No trust anchor(s) loaded for : $domain" );
-        return 0;
-    }
-
-    logit("Validating existing anchors for $domain in DNS");
-
-    # query the DNS source for all the keys and verify that the anchors
-    # we loaded are all published keys,
-
-    my ( $keyindex, @allkeys ) = queryAndIndexKeys( $conf , $domain );
-
-    # THEN query the signatures, and index them by the ID
-    my $sigindex = queryAndIndexSigs( $conf , $domain );
-
-    # so now compare the anchors on the grid with the keys
-    # we pulled from DNS
-    my $validIDs ;
-    my $badkeys ;
-
-    # compare by matching the keyid
-    foreach my $id ( keys %{ $anchors } ) {
-        unless ( $keyindex->{$id} ) {
-            # [ ] one bad key kinda ruins the batch
-            #     (If you are adding a new domain to track)
-            logerror( "Anchor : $id : $anchors->{$id}{key}");
-            logerror( "Anchor : $id : is not a published key for $domain" );
-
-            $badkeys++;
-            next ;
-        }
-
-        # otherwise this key checks out, lets double check
-        # and validate it. Since the tags match, we can use the
-        # RR in the dataset from the query
-        
-        my $keyrr = $keyindex->{$id};
-#         my $id = $keyrr->keyid();
-
-        unless ( $keyrr->sep() ){
-            logerror( "Anchor : $id is not a SEP key" );
-            $badkeys++;
-            next ;
-        }
-
-        # find the matching signature
-        my $sigrr = $sigindex->{ $id };
-        unless ( $sigrr ) {
-            logerror( "Anchor : $id : missing RRSIG" );
-            $badkeys++;
-            next ;
-        }
-
-        # now try and verify this signature with our orignal key
-        # and the queried keyset
-        if ( $sigrr->verify( [ @allkeys ], $keyrr ) ) {
-            logit( "Anchor : $id : is valid" );
-            push @{ $validIDs } , $id ;
-        }
-        else {
-            logerror( "Anchor : $id : " . $sigrr->vrfyerrstr ) ;
-            $badkeys++;
-        }
-
-    }
-
-    # lastly, we don't know the full context of this validate request,
-    # so we need to also pass back the keys we found to the parent and let
-    # that decide what to do with them
-
-    # any bad key ruins the batch
-    if ( $badkeys ) {
-        logit( "Cannot add '$domain' without a valid set of anchors" );
-        return undef ;
-    }
-    else {
-        return ( $validIDs , values %{ $keyindex } );
-    }
-
-}
-
-#
-# [ ] GN:DN ??
-#
-# inserts a list of Net::DNS:RR objects into the 'keys' part of the
-# config.
-#
-# also flags those records with some sort of state
-#
-sub addKeyRRsToConfig {
-    my ( $conf , $state , @rrlist ) = @_ ;
-
-    foreach my $rr ( @rrlist ) {
-
-        my $id = $rr->keyid() ;
-
-#         # and add the dnsinfo to the config
-#         $conf->{keys}{$domain}{$id}{state} = $state,
-#         $conf->{keys}{$domain}{$id}{query} = "ok";
-#         $conf->{keys}{$domain}{$id}{rr} = {
-#             flags => $rr->flags(),
-#             sep => $rr->sep(),
-#             # we need the WHOLE key for the trust anchor
-#             key => $rr->key(),
-#             # and keep an MD5 sum for repairs and regex
-#             digest => md5_base64 ( $rr->key() ),
-#             algorithm => $rr->algorithm(),
-# #                     key => substr($rr->key(), -8, 8),
-#             private => $rr->privatekeyname(),
-#             tag => $rr->keyid(),
-#         }
-
-    }
-}
-
-######################################################
-#
 # Net::DNS operations
 #
 
@@ -1252,8 +1117,20 @@ sub checkState {
 #         rdata => { Net::DNS::RR::DNSKEY },
 #     }
 
-    # [ ] walk the keys we know about (on the grid)
-    #    since this is the last KNOWN state
+    # check for any unknown anchors that we weren't tracking
+    # and aren't new
+    # someone may have added something to the gui,
+
+    my $anchors = $conf->{anchors}{$domain} ;
+    foreach my $id ( sort {$a <=> $b} keys %{ $anchors } ) {
+        unless ( $gdata->{$id} or $validKeyIDs->{$id} ) {
+            logerror( "state : $id : anchor is unknown -> delete");
+            discoKey( $conf , $domain , undef , $id );
+        }
+    }
+
+    # walk the keys we know about (on the grid)
+    # since this is the last KNOWN state
     # and compare them to the keys we just queried
 
 
@@ -1432,9 +1309,14 @@ sub checkState {
 
     }
 
-    # [ ] then walk any dangling keys from the query
+    # then walk any dangling keys from the query
     # any remaining keys in the $validKeyIDs index are new to us
     # and should just be added as pending
+
+    # [ ] corner case. we weren't tracking this key, but it is
+    # both valid and already configured as a trust anchor,
+    # iff so, the state should be valid... (but also applies to above)
+    # - adds it as pending... and kicks an error, prob ok
 
     foreach my $id ( sort {$a <=> $b} keys %{ $validKeyIDs } ) {
     
