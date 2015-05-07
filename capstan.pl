@@ -244,9 +244,52 @@ sub addDomain {
     # we return any valid anchors for this domain as a list of IDs
     # and additonal keys we also found
 
-    my ( $anchorids , @keys ) = validateAnchor( $conf , $domain );
+#     my ( $anchorids , @keys ) = validateAnchor( $conf , $domain );
+    my $validIDs = validateDomainKeys( $conf , $domain );
 
-    return 1 unless $anchorids ;
+    return 1 unless $validIDs ;
+
+    # we now have a list of valid keys, 
+    # and a list of anchors
+
+    # so normalise the keys to an index based on the id, not the tag
+    # so we can match the keys even if they were revoked
+    
+    my $validKeyIDs = { map { $_->{rdata}->keyid => $_ }
+            values %{ $validIDs } };
+
+    # $validKeyIDs is now a HASHREF with the state for each GRIDID
+    # and the Net::DNS::RR::DNSKEY record
+    # 9795 => {
+    #   rdata => { Net::DNS::RR::DNSKEY }
+    #   state => 'valid|revoked|...'
+    # }
+
+    # then we can directly compare these to what we have in the grid
+    # this is really a subset of the statemachine...
+
+    # first check the anchors for any bad keys
+
+    my $anchors = $conf->{anchors}{$domain} ;
+
+    my $badanchors ;
+    foreach my $id ( sort {$a <=> $b} keys %{ $anchors } ) {
+        if ( $validKeyIDs->{$id} ) {
+            if ( $validKeyIDs->{$id}->{state} =~ /revoked/i ) {
+                logerror("Anchor $id was revoked for domain $domain");
+                $badanchors++;
+            }
+        }
+        else {
+            logerror("Anchor $id is not a valid key for domain $domain");
+            $badanchors++;
+        }
+#         print Dumper ( $validKeyIDs->{$id} );
+    }
+    return 1 if $badanchors ;
+
+    # all our configured anchors are good, we can add this domain
+    logit("all configured anchors are valid for domain $domain");
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
@@ -259,41 +302,50 @@ sub addDomain {
     my $levelname = 'default';
     my $fqdn = join ( "." , $domain , $levelname , $level , $conf->{zone} );
 
-    my $tobj = Infoblox::DNS::Record::TXT->new(
-        name => $fqdn,
-        text => "domain:$domain loc:$level",
-        comment => $AUTOCOMM,
-        extensible_attributes => { 
-            RFC5011Level => $level,
-            RFC5011Name => $levelname,
-            RFC5011Type => 'domain' 
-        },
-    );
-            
-    $session->add( $tobj );
-    getSessionErrors( $session , "domain $fqdn" );
+    if ( $TESTKEYS ) {
+        logwarn( "test mode : add domain $fqdn" );
+    }
+    else {
 
-    # we now have a list of valid keys, and a list of keytags
-    # for keys (anchors) that we already know about.
+        my $tobj = Infoblox::DNS::Record::TXT->new(
+            name => $fqdn,
+            text => "domain:$domain loc:$level",
+            comment => $AUTOCOMM,
+            extensible_attributes => { 
+                RFC5011Level => $level,
+                RFC5011Name => $levelname,
+                RFC5011Type => 'domain' 
+            },
+        );
+                
+        $session->add( $tobj );
+        getSessionErrors( $session , "domain $fqdn" );
+    }
+
     #
-    # So walk ALL the keys and just decide if they are
+    # All the keys are now a superset of the trust anchors,
+    # so we walk the GID index of these keys and decide if they are
     # valid or pending
+    #
 
-    foreach my $rr ( @keys ) {
+    foreach my $id ( sort {$a <=> $b} keys %{ $validKeyIDs } ) {
+        my $krec = $validKeyIDs->{$id};
+        my $rr = $krec->{rdata};
+
         # generate a non-changing ID
-        my $id = $rr->keytag() ;
-        my $gridid = $rr->keyid() ;
+        my $tag = $rr->keytag() ;
 
         my $rec = {
             domain => $domain,
-            id => $id,
-            gid => $gridid,
+            id => $tag,
+            gid => $id,
             level => $level,
             lvlname => $levelname,
             state => 'pending',
         };
         
-        if ( grep ( /^$id$/ , @{ $anchorids } ) ) {
+        if ( $anchors->{$id} ) {
+#         if ( grep ( /^$id$/ , @{ $anchorids } ) ) {
             $rec->{state} = 'valid',
         }
 
@@ -361,8 +413,6 @@ sub delDomain {
 sub addKey {
     my ( $conf , $rec ) = @_ ;
 
-    return if $TESTKEYS ;
-
     # we have to set some defaults of the PAII will choke on
     # invalid/blank EA values
     my $id = $rec->{id};
@@ -373,16 +423,18 @@ sub addKey {
     my $state = $rec->{state} || 'start' ;
     my $info = $rec->{info};
 
-    # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
-    return unless $session ;
-
     # add the domain to be tracked
     my $fqdn = join ( "." , $gid , 'key' , $domain , $lvlname , 
                             $level , $conf->{zone} );
 
     # add the tracking zone
     logit( "Adding key $gid ($id) for $domain as $state");
+
+    return if $TESTKEYS ;
+
+    # now try and connect to the grid and make some other settings
+    my $session = startSession( $conf );  
+    return unless $session ;
 
     my $tobj = Infoblox::DNS::Record::TXT->new(
         name => $fqdn,
@@ -941,6 +993,7 @@ sub validateDomainKeys {
     my $anchors = $conf->{anchors}{$domain} ;
     unless ( $anchors ) {
         logerror("validate : no active trust anchors for $domain");
+        return undef ;
     }
 
     # get the keys from dns
@@ -956,7 +1009,7 @@ sub validateDomainKeys {
     # And we need a list of valid keys.
     # so track 2 states : Trusted : Valid 
     my $keystate = {};
-    my $trustedKeySet = 0 ;
+    my @trustedKeySet ;
     my $faker = 1 ;   # loop hook for testing
 
     # now walk ALL of the DNS keys, and verify them
@@ -1010,7 +1063,8 @@ sub validateDomainKeys {
         elsif ( $sigrr->verify( \@allkeys , $keyrr ) ) {
             $vstate = 'valid';
             # is this valid key trustworthy ?
-            $trustedKeySet = 1 if $tstate eq 'trusted';
+            push @trustedKeySet , $id if $tstate eq 'trusted';
+#             $trustedKeySet = 1 if $tstate eq 'trusted';
 
             $krec->{state} = 'valid';
             logit( "key : $rrid : $tstate : $vstate" );
@@ -1044,7 +1098,7 @@ sub validateDomainKeys {
 
     # and only return a trustworthy set
     #
-    unless ( $trustedKeySet ) {
+    unless ( @trustedKeySet ) {
         logerror( "No trustworthy keys could be found" );
         return undef ;
     }
@@ -2376,6 +2430,7 @@ package Net::DNS::RR::DNSKEY ;
 #
 # calculates a keytag that ignores the flags,
 # so it always returns the same value for the same key
+# RFC4034 Appendix B variant
 #
 # requires $keyrr->keybin();
 #

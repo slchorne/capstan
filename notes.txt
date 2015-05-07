@@ -31,7 +31,24 @@ Capstan
 
 [ ] publish to github
 
+[ ] Re-do a test from scratch
+
+[ ] statemacine needs to detect invalid anchors
+    added via the GUI
+    [ ] marks them as missing ??
+
+[ ] finish the perl doc
+    [ ] readme.pod (works with github)
+    perldoc -u capstan.pl > README.pod
+
 [x] testing
+
+    basic test plan
+
+    ./capstan.pl --init --gm 10.64.128.20 --user admin --pass infoblox -f
+    ./capstan.pl -a org -x 208.69.40.3
+    ./capstan.pl -r org
+
     [t] bad DNS resolver
         ./capstan.pl
 
@@ -139,6 +156,9 @@ Capstan
 
 [x] need a nameserver to resolve the KSKs 
     [x] set an EA on one of the members.
+
+[x] merge validateAnchor() and validateDomainKeys()
+    [x] check for invalid keys in the grid
 
 [x] track missing keys
     count how long it has been missing
