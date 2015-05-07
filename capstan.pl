@@ -918,68 +918,122 @@ sub queryAndIndexSigs {
 # validation requires you to get and compare ALL the keys, so you may as
 # well do it in a batch and find a way to pass back bulk results
 #
+# you SHOULD ONLY validate from your existing keys, NOT from anything
+# passed in the current RRset.
+#
+# So we have an odd kind of loop here, but it should work like this:
+# - get the existing anchors,
+# - find their signatures
+# - check that these anchors still validate the keyset
+# - check for revoked keys (arrg)
+# - check for any new keys that are in the RRSET
 #
 
 sub validateDomainKeys {
     my ( $conf , $domain ) = @_ ;
 
+    # [ ] we need to know view/member context as well
+
     logit("validate : $domain : in DNS");
 
-    my ( $idx, @allkeys ) = queryAndIndexKeys( $conf , $domain );
+    # now get all the keys from the trust anchors These will be
+    # indexed by the GID
+    my $anchors = $conf->{anchors}{$domain} ;
+    unless ( $anchors ) {
+        logerror("validate : no active trust anchors for $domain");
+    }
 
+    # get the keys from dns
+    my ( $idx, @allkeys ) = queryAndIndexKeys( $conf , $domain );
     return undef unless @allkeys ;
 
-    # get all the signatures, indexed by keytag
-    # we use the KEYTAG so we can match them to keys
+    # get all the signatures, indexed by keytag from DNS
+    # we use the KEYTAG so we can match them to the DNS keys
     my $sigindex = queryAndIndexSigs( $conf , $domain );
+    return undef unless $sigindex ;
 
+    # we need at least 1 trust anchor to vaidate the keyset,
+    # And we need a list of valid keys.
+    # so track 2 states : Trusted : Valid 
     my $keystate = {};
-    # now walk ALL of the keys, and verify them
+    my $trustedKeySet = 0 ;
+    my $faker = 1 ;   # loop hook for testing
+
+    # now walk ALL of the DNS keys, and verify them
     foreach my $keyrr ( @allkeys ) {
+
         # only track trust anchors
         next unless $keyrr->sep();
 
         # keep all the dnsinfo, track an initial state
         my $tag = $keyrr->keytag();
+        my $id = $keyrr->keyid();
+        my $rrid = "$id tag[$tag]";
         my $krec = {
             rdata => $keyrr,
             state => undef ,
         };
 
         # assume all keys are bad
-        my $invalidKey = 1 ;
+        my $vstate = 'invalid' ;
+        my $tstate = 'untrusted' ;
+
+        if ( $anchors->{$id} ) {
+            $tstate = 'trusted' ;
+        }
 
         # find the signature for this key
         my $sigrr = $sigindex->{ $tag };
-
         if ( ! $sigrr ) {
-            logit( "key : tag $tag : no RRSIG found" );
+            logit( "key : $rrid : $tstate : $vstate : no RRSIG found" );
             $krec->{state} = 'nosig';
         }
 
-        # now try and verify this signature with our orignal key
+        # --------------------------------------
+        # hook for testing
+        # fake an invalid key
+        elsif ( $faker && $TESTSTATE =~ /invalid/i ) {
+            # invalidate the first RR
+            $krec->{state} = 'error';
+            logwarn( "TEST : invalid key $tag");
+            logerror( "key : $rrid : $tstate : $vstate" );
+        }
+        # --------------------------------------
+
+        # now try and verify this signature, WRT a trust anchor
         # even revoked keys are valid in this context
+        #
+        # and even if we had a valid key in the past, if someone changes
+        # the RRset and doesn't fix the signatures, it is possible
+        # for a valid key to fail validation
+
         elsif ( $sigrr->verify( \@allkeys , $keyrr ) ) {
-            $invalidKey = 0 ;
+            $vstate = 'valid';
+            # is this valid key trustworthy ?
+            $trustedKeySet = 1 if $tstate eq 'trusted';
+
             $krec->{state} = 'valid';
-            logit( "key : tag $tag : is valid" );
+            logit( "key : $rrid : $tstate : $vstate" );
 
             # revoked keys must still validate!!
             if ( $keyrr->revoke() ) {
-                logit( "key : tag $tag : revoked" );
+                logit( "key : $rrid : $tstate : $vstate : revoked" );
                 $krec->{state} = 'revoked';
             }
         }
         else {
             $krec->{state} = 'error';
-            logerror( "key : tag $tag : " . $sigrr->vrfyerrstr ) ;
+            logerror( "key : $rrid : $tstate : $vstate : " . $sigrr->vrfyerrstr ) ;
         }
 
         # valid keys we keep, anything else we drop from the
         # validated DNSKEY RRSet
-        unless ( $invalidKey ) {
+        if ( $vstate eq 'valid' ) {
             $keystate->{$tag} = $krec ;
         };
+
+        # only fake the first rr in the set
+        $faker = 0 ;
     }
 
     # now, for testing, we may inject or remove some keys
@@ -988,7 +1042,10 @@ sub validateDomainKeys {
         $keystate = setFakeKeys( $TESTSTATE , $keystate )
     }
 
-    return $keystate ;
+    # and only return a trustworthy set
+    #
+    return $keystate if $trustedKeySet ;
+    return undef  ;
 
 }
 
@@ -1914,6 +1971,8 @@ sub getKeys {
 #
 # stored in the 'dnssec_trusted_keys()' part of the DNS settings
 #
+# return a hask, keyed by location,domain and gid
+#
 
 sub getAnchors {
     my ( $conf ) = @_ ;
@@ -1933,7 +1992,7 @@ sub getAnchors {
     return undef unless $gobj ;
 
     my $data = {};
-    # walk all the anchors, and index them by domain and digest
+    # walk all the anchors, and index them by domain and key
     foreach my $gkey ( @{ $gobj->dnssec_trusted_keys() } ) {
 
         my $alg = getAlgorithm ( $gkey->algorithm() );
@@ -1943,7 +2002,15 @@ sub getAnchors {
         # generate a Net::DNS::RR so we can calculate the keyid
         my $keyrr = new Net::DNS::RR("$domain DNSKEY 257 3 $alg $k");
 
-        my $id = $keyrr->keytag();
+        # we index by keyid, because we want it to be agnostic
+        # to any revoke or other flags
+
+        my $id = $keyrr->keyid();
+
+#         $data->{ $domain }{ $id } = {
+#             rdata => $keyrr,
+#             object => $gkey
+#         };
 
         $data->{ $domain }{ $id } = $gkey ;
     }
@@ -2184,7 +2251,12 @@ sub setFakeKeys {
     # usually we can just modify one of the keys
     my ( $tag ) = sort {$a<=>$b} keys %{ $keydata } ;
 
-    logwarn( "TEST : $state keys for tag $tag" );
+    
+    # the 'invalid' test is in the validateDomainKeys()
+    if ( $state =~ /invalid/i ) {
+        logwarn( "TEST : $state keys for tag $tag" );
+    }
+
 
     if ( $state =~ /miss|remove/i ) {
         logwarn( "TEST : hide key $tag");
@@ -2237,6 +2309,9 @@ sub fakenewkey {
 
 }
 
+#
+# placeholders for some test keys
+#
 sub fakedns {
 
 #                 ) ; key id = 30909

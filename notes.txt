@@ -31,6 +31,17 @@ Capstan
 
 [ ] publish to github
 
+[ ] RE TEST ANY call to getAnchors
+    [ ] and $conf->{anchors}
+    [ ] the data structure changes
+    [ ] how they are keyed...
+
+    [ ] merge validateAnchor and validateDomainKeys()
+        since they nod do almost the same thing
+
+    [ ] publishkey
+    [ ] discokey
+
 [x] testing
     [t] bad DNS resolver
         ./capstan.pl
@@ -68,6 +79,8 @@ Capstan
 
     [-] invalid key 
         treated as missing
+        but fake an error message in the right place
+        ./capstan.pl -x 208.69.40.3 -w invalid
         keystate == 'error'
 
     [-] unsigned key 
@@ -149,28 +162,32 @@ Capstan
     [x] revoked keys still need to be valid
 
     [ ] always validate from known KEYS only.
+        [ ] pull the keys from the grid,
+            use them to validaye the RRSET
         [ ] never add a key that wasn't checked by a trusted key
 
-        [ ] So... if an invalid key is in the RRset,
-            ALL but one of the signatures will fail.
-            And the NEW/BAD set will pass...
+        [ ] if a key fails validation, that key is bad,
+            and impicitly the keyset may end up bad,
+            when all keys fail.
 
-        [ ] So... if an invalid key is in the RRset,
-            and no valid key can validate the RRSET
-            is that new key invalid ?
+        [ ] injected (bad) keys will never make it
+            into the RRSEt, until they are in a valid
+            signature, signed by a known key
 
-    [ ] ANY failed signature for a trusted key,
-        invalidates the whole SET ?
+            [ ] report errors with injected keys
+                (These could be new keys on hold)
+
+    [ ] A key that fails to validate the set is invalid
+    [ ] A key with no signature is invalid
 
     [ ] An invalid key is considered missing
         because it is not in the 'validated DNSKEY RRSet'
 
-    [ ] A key with no signature is invalid
-    [ ] A key that fails to validate the set is invalid
 
 [ ] grid or MEMBER level anchors, not views ?
     [x] how to set the location ?
         EAs, and insert into the TXT FQDN
+    [ ] need to store grid/member/view in getAnchors();
 
 [-] REST API ? 
     NOT supported for trust anchors, need to use PAPI.
