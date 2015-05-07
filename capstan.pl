@@ -562,23 +562,23 @@ sub discoKey {
     my $session = startSession( $conf );  
     return unless $session ;
 
-    # Any keys on the grid are valid and NOT revoked, so the ONLY
-    # way we can match is to take whatever key we were given, and
-    # calculate the unrevoked tag
-    $keyrr->revoke(0);
-    my $id = $keyrr->keytag();
+    # this new key could be a revoked version of the key we
+    # were trusting. So to compare it we use the GID, not the tag
+    # ( as the tag changes when you revoke a key );
+
+    my $id = $keyrr->keyid();
 
     logit( "UnTrusting key $id for $domain");
 
     print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
 
     #
-    # we can't use the anchors in the config, we may have added an anchor
-    # in a previous statemachine loop and shouldn't trust the config for
-    # avoiding race conditions.
-    #
+    # we can't use the anchors already in the config, 
+    # we may have done things in a previous loop and that altered the
+    # config. So we have to refresh the data direct from the grid
+
     # So just pull them again from the grid
-    # these are indexed by domain and ID, ( to avoid conflicts )
+    # these are indexed by domain and GID, ( to avoid conflicts )
     # $keyrr
     #     'com' => {
     #       '30909' => {
@@ -1044,8 +1044,12 @@ sub validateDomainKeys {
 
     # and only return a trustworthy set
     #
-    return $keystate if $trustedKeySet ;
-    return undef  ;
+    unless ( $trustedKeySet ) {
+        logerror( "No trustworthy keys could be found" );
+        return undef ;
+    }
+
+    return $keystate ;
 
 }
 
@@ -1968,10 +1972,9 @@ sub getKeys {
 
 #
 # get all the existing trust anchors configured on the grid
-#
 # stored in the 'dnssec_trusted_keys()' part of the DNS settings
 #
-# return a hask, keyed by location,domain and gid
+# return a hash, keyed by location,domain and GID
 #
 
 sub getAnchors {
@@ -2254,7 +2257,7 @@ sub setFakeKeys {
     
     # the 'invalid' test is in the validateDomainKeys()
     if ( $state =~ /invalid/i ) {
-        logwarn( "TEST : $state keys for tag $tag" );
+        return ;
     }
 
 

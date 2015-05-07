@@ -31,17 +31,6 @@ Capstan
 
 [ ] publish to github
 
-[ ] RE TEST ANY call to getAnchors
-    [ ] and $conf->{anchors}
-    [ ] the data structure changes
-    [ ] how they are keyed...
-
-    [ ] merge validateAnchor and validateDomainKeys()
-        since they nod do almost the same thing
-
-    [ ] publishkey
-    [ ] discokey
-
 [x] testing
     [t] bad DNS resolver
         ./capstan.pl
@@ -161,28 +150,27 @@ Capstan
 
     [x] revoked keys still need to be valid
 
-    [ ] always validate from known KEYS only.
-        [ ] pull the keys from the grid,
-            use them to validaye the RRSET
-        [ ] never add a key that wasn't checked by a trusted key
+    [x] always validate from known KEYS only.
+        [x] compare the queried key to a key in the grid
+            use that to match trusted keys
+        [x] never add a key that wasn't checked by a trusted key
 
-        [ ] if a key fails validation, that key is bad,
+        [x] if a key fails validation, that key is bad,
             and impicitly the keyset may end up bad,
             when all keys fail.
 
-        [ ] injected (bad) keys will never make it
+        [x] injected (bad) keys will never make it
             into the RRSEt, until they are in a valid
             signature, signed by a known key
 
-            [ ] report errors with injected keys
+            [x] report errors with injected keys
                 (These could be new keys on hold)
+                
+    [x] A key that fails to validate the set is invalid
+    [x] A key with no signature is invalid
 
-    [ ] A key that fails to validate the set is invalid
-    [ ] A key with no signature is invalid
-
-    [ ] An invalid key is considered missing
+    [x] An invalid key is considered missing
         because it is not in the 'validated DNSKEY RRSet'
-
 
 [ ] grid or MEMBER level anchors, not views ?
     [x] how to set the location ?
