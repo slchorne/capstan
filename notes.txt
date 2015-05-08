@@ -215,9 +215,27 @@ Capstan
         because it is not in the 'validated DNSKEY RRSet'
 
 [ ] grid or MEMBER level anchors, not views ?
-    [x] how to set the location ?
-        EAs, and insert into the TXT FQDN
-    [ ] need to store grid/member/view in getAnchors();
+    [x] need to store grid/member/view in getAnchors();
+
+    [ ] Fix ALL calls to getanchors...
+    [ ] Fix ALL refs to $conf->anchors
+
+    [ ] need a way to get a REF to the
+        DNS props when calling 'pub/discokey'
+
+        [ ] We ALWAYS know the level and name so just
+            pass it to a generic getDNSSettings() call
+
+        [-] Can we use this for getAnchors ??
+            No - because one is specific and
+            one gets ALL settings
+
+    [ ] tag the view
+        RFC5011Level = 'view'
+    [ ] tag the member, 
+        RFC5011Level = 'member'
+        [ ] need to do this on the GRID menber, can't set it
+            on any DNS props
 
 [-] REST API ? 
     NOT supported for trust anchors, need to use PAPI.
@@ -242,23 +260,25 @@ Capstan
             ( REST would be better, but it simplifies syntax )
         [x] the zone is ALWAYS in the default view
 
-        [ ] need to track records for both grid and other levels
+        [x] need to track records for both grid and other levels
             so dotted names aren't going to directly cut it
-            [ ] default.grid.RFC5011.infoblox.local
-                RFC5011Managed == 'grid'
-                RFC5011Location == 'grid'
-            [ ] member.name.member.RFC5011.infoblox.local
-                RFC5011Managed == 'member'
-                RFC5011Location == 'member.name'
-            [ ] view.name.view.RFC5011.infoblox.local
-                RFC5011Managed == 'view'
-                RFC5011Location == 'view.name'
+            [x] default.griLevel.RFC5011.infoblox.local
+                RFC5011Level == 'grid'
+                RFC5011Name == 'grid'
+                RFC5011Type == 'key'
+            [x] member.name.member.RFC5011.infoblox.local
+                RFC5011Level == 'member'
+                RFC5011Name == 'member.name'
+                RFC5011Type == 'key'
+            [x] view.name.view.RFC5011.infoblox.local
+                RFC5011Level == 'view'
+                RFC5011Name == 'view.name'
+                RFC5011Type == 'key'
 
-        [ ] add the domain as 'domain.grid|member.namespace'
-            RFC5011Managed == 'grid|member'
-            RFC5011 == 'domain'
-        [ ] add the key as 'ID.key.domain.grid|member.namespace'
-            RFC5011 == 'grid'
+        [x] add the domain as 'domain.grid|member.namespace'
+                RFC5011Level == '|member|view'
+                RFC5011Name == 'view.name'
+                RFC5011Type == 'domain'
 
     [x] auto-configure the zone on init, first run
 

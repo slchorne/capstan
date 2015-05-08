@@ -1925,11 +1925,57 @@ sub getAnchors {
     );
     getSessionErrors( $session ,"getAnchors : Infoblox::Grid::DNS"); 
 
+    # no grid properties is bad
     return undef unless $gobj ;
 
     my $data = {};
-    # walk all the anchors, and index them by domain and key
-    foreach my $gkey ( @{ $gobj->dnssec_trusted_keys() } ) {
+    $data->{grid}{default} = getObjectAnchors( $gobj );
+
+    # then find any member or view level settings
+
+    # you can't store EAs on a Infoblox::Grid::Member::DNS object,
+    # So we have to get the list of members first
+    my @members = $session->get(
+        object => "Infoblox::Grid::Member",
+        extensible_attributes => { RFC5011Level => { value => "member" } }
+    );
+    foreach my $mobj ( @members ) {
+        my $mname = $mobj->name();
+        say "Get dns for $mname";
+        my ( $mdns ) = $session->get(
+            object => "Infoblox::Grid::Member::DNS",
+            name => $mname,
+        );
+
+        $data->{member}{$mname} = getObjectAnchors( $mdns );
+    }
+
+    # and the views
+    my @views = $session->get(
+        object => "Infoblox::DNS::View",
+        extensible_attributes => { RFC5011Level => { value => "view" } }
+    );
+    foreach my $vobj ( @views ) {
+        my $vname = $vobj->name();
+        $data->{view}{$vname} = getObjectAnchors( $vobj );
+    }
+
+    return ( $data , $gobj );
+
+}
+
+#
+# extract and format the dnssec_trusted_keys
+# for a PAPI object
+#
+sub getObjectAnchors {
+    my ( $obj ) = @_ ;
+
+    my $data = {};
+
+    return unless $obj->dnssec_trusted_keys() ;
+
+    foreach my $gkey ( @{ $obj->dnssec_trusted_keys() } ) {
 
         my $alg = getAlgorithm ( $gkey->algorithm() );
         my $k = $gkey->key();
@@ -1942,17 +1988,10 @@ sub getAnchors {
         # to any revoke or other flags
 
         my $id = $keyrr->keyid();
-
-#         $data->{ $domain }{ $id } = {
-#             rdata => $keyrr,
-#             object => $gkey
-#         };
-
         $data->{ $domain }{ $id } = $gkey ;
     }
 
-    return ( $data , $gobj );
-
+    return $data ;
 }
 
 #
