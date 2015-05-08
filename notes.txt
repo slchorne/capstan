@@ -45,7 +45,12 @@ Capstan
 
     basic test or demo plan
 
+    make the nameserver recurse to the real world
+
+        # move the org key from the grid
     ./capstan.pl --init --gm 10.64.128.20 --user admin --pass infoblox -f
+    ./capstan.pl -a org -x 208.69.40.3
+        # move the org key back into place
     ./capstan.pl -a org -x 208.69.40.3
     ./capstan.pl -r org
     ./capstan.pl -a org -x 208.69.40.3

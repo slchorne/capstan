@@ -857,7 +857,7 @@ sub validateDomainKeys {
     # indexed by the GID
     my $anchors = $conf->{anchors}{$domain} ;
     unless ( $anchors ) {
-        logerror("validate : no active trust anchors for $domain");
+        logerror("validate : no active trust anchors in NIOS for $domain");
         return undef ;
     }
 
@@ -1376,29 +1376,25 @@ sub setMemberNS {
     my $memberinfo ;
     my @cleanmembers ;
     my $newobj ;
+
+    # first see if we even have a valid member to modify, if not
+    # don't make any changes. So we check all the members and stage
+    # the changes
     foreach my $mobj ( @members ) {
         my $name = $mobj->name();
         my $ip = $mobj->ipv4addr();
-        my $state = "";
 
-        # see if this member is the query member
-        # and track it for cleanup
-        $state = getAttributes( $mobj , 'RFC5011Type' );
-        push @cleanmembers , $mobj  if $state ;
-#         if ( $mobj->extensible_attributes()
-#             && $mobj->extensible_attributes()->{RFC5011}
-# #             ) {
-#                 $state = $mobj->extensible_attributes()->{RFC5011} ;
-#         }
+        my $state = getAttributes( $mobj , 'RFC5011Type' );
 
-        # OR if this is the new member
+        # see if this member is the new query member
         if ( $name eq $member ) {
             logit( "setting $member as query nameserver" );
             $newobj = $mobj ;
         }
-
-        # we could have overlaps here if you re-set the current
-        # nameserver member, but that will be OK
+        # and track other members for cleanup
+        elsif ( $state ) {
+            push @cleanmembers , $mobj;
+        }
 
         $memberinfo .= "  $name : $ip : $state\n";
     }
@@ -1591,7 +1587,8 @@ sub initConfig {
     return unless $session ;
 
     # Create some EAs
-    foreach my $ea ( qw( RFC5011Type
+    foreach my $ea ( qw( 
+                RFC5011Type
                 RFC5011Time
                 RFC5011State
                 RFC5011Level
