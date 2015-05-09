@@ -53,7 +53,6 @@ my %ALGNUMLOOK = @ALGBYNUM ;
 my %ALGLOOK = reverse @ALGBYNUM ;
 
 my $GRIDMASTER ;
-my $MEMBER ;
 my $NAMESERVER ;
 my $USER ;
 my $PASS ;
@@ -68,6 +67,11 @@ my $LISTDOMAINS;
 my $LISTKEYS;
 my $TESTKEYS;
 my $PASSIVE;
+my $MEMBER ;
+my $VIEW ;
+
+my $KEYLEVEL = 'grid';
+my $KEYNAME = 'default';
 
 my $DEBUG ;
 my $NOOP ;
@@ -96,6 +100,8 @@ my $ores = GetOptions (
 #     "s"       => \$RESYNC,
     "p"       => \$PASSIVE,
     "t"       => \$TESTKEYS,
+    "v=s"     => \$VIEW,
+    "m=s"     => \$MEMBER,
 
     "C"       => \$SHOWCONFIG,
     "c"       => \$SHOWLOCALCONFIG,
@@ -130,6 +136,8 @@ capstan : an implementation of RFC 5011 for Infoblox
 
   -a <domain>   Add a domain to track
   -r <domain>   Remove a domain to track
+  -v <view>     Add/Remove a domain from this view
+  -m <member>   Add/Remove a domain from this member
   -l            List tracked domains
   -k            List tracked keys
 
@@ -180,12 +188,21 @@ showConfig( $conf ) && exit if $SHOWCONFIG ;
 
 # adding domains requires key validation, 
 # and essentially everything that relates to the grid config
-# so we may as well pull the whole config, coze we don't get any
+# so we may as well pull the whole config, coz we won't get any
 # performance gain by bypassing this step (and we would just dupe a messy
-# pile o' code
+# pile o' code)
 
-addDomain( $conf , $ADD ) && exit if $ADD;
-delDomain( $conf , $REMOVE ) && exit if $REMOVE;
+if ( $VIEW ) {
+    $KEYLEVEL='view';
+    $KEYNAME=$VIEW;
+}
+if ( $MEMBER ) {
+    $KEYLEVEL='member';
+    $KEYNAME=$MEMBER;
+}
+
+addDomain( $conf , $KEYLEVEL, $KEYNAME, $ADD ) && exit if $ADD;
+delDomain( $conf , $KEYLEVEL, $KEYNAME, $REMOVE ) && exit if $REMOVE;
 
 # strictly speaking these on-offs could happen before
 # calling loadGridConf(), but by doing them here, and just checking the
@@ -237,14 +254,14 @@ of the tracked domain
 #
 
 sub addDomain {
-    my ( $conf , $domain ) = @_ ;
+    my ( $conf , $level , $lname , $domain ) = @_ ;
 
     # adding a domain requires using an existing trust anchor
     # so we just use the config to get the grid anchor, and prime a DNS query
     # we return any valid anchors for this domain as a list of IDs
     # and additonal keys we also found
 
-    my $validIDs = validateDomainKeys( $conf , $domain );
+    my $validIDs = validateDomainKeys( $conf , $level , $lname , $domain );
 
     return 1 unless $validIDs ;
 
@@ -269,7 +286,7 @@ sub addDomain {
 
     # first check the anchors for any bad keys
 
-    my $anchors = $conf->{anchors}{$domain} ;
+    my $anchors = $conf->{anchors}{$level}{$lname}{$domain} ;
 
     my $badanchors ;
     foreach my $id ( sort {$a <=> $b} keys %{ $anchors } ) {
@@ -297,9 +314,10 @@ sub addDomain {
     # add the domain to be tracked to the zone
     logit( "Adding tracking domain $domain");
 
-    my $level = 'grid';
-    my $levelname = 'default';
-    my $fqdn = join ( "." , $domain , $levelname , $level , $conf->{zone} );
+#     my $level = 'grid';
+#     my $lname = 'default';
+
+    my $fqdn = join ( "." , $domain , $lname , $level , $conf->{zone} );
 
     if ( $TESTKEYS ) {
         logwarn( "test mode : add domain $fqdn" );
@@ -312,7 +330,7 @@ sub addDomain {
             comment => $AUTOCOMM,
             extensible_attributes => { 
                 RFC5011Level => $level,
-                RFC5011Name => $levelname,
+                RFC5011Name => $lname,
                 RFC5011Type => 'domain' 
             },
         );
@@ -339,7 +357,7 @@ sub addDomain {
             id => $tag,
             gid => $id,
             level => $level,
-            lvlname => $levelname,
+            lvlname => $lname,
             state => 'pending',
         };
         
@@ -369,16 +387,17 @@ the namespace of the tracked domain
 =cut
 
 sub delDomain {
-    my ( $conf , $domain ) = @_ ;
+    my ( $conf , $level , $lname , $domain ) = @_ ;
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
     return unless $session ;
 
     # remove the domain to be tracked
-    my $level = 'grid';
-    my $levelname = 'default';
-    my $parent = join ( "." , $domain , $levelname , $level , $conf->{zone} );
+#     my $level = 'grid';
+#     my $levelname = 'default';
+    my $parent = join ( "." , $domain , $lname , $level , $conf->{zone} );
+
 
     logit( "Deleting tracking domain $domain");
 
@@ -554,7 +573,7 @@ sub removeKey {
 # the rest we can pull from the record
 # 
 sub publishKey {
-    my ( $conf , $domain , $keyrr ) = @_ ;
+    my ( $conf , $level, $lname, $domain , $keyrr ) = @_ ;
 
     return if $TESTKEYS ;
 
@@ -566,16 +585,16 @@ sub publishKey {
 
     logit( "Trusting key $id for $domain");
 
+    print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
+
     #
-    # avoid race conditions with the config, and 
-    # just call getAnchors(); ( but we don't use the $anchors hash )
-    my ( $anchors , $gobj ) = getAnchors( $conf );
+    # avoid race conditions with the config, and just get the
+    # DNS settings direct from the grid
+    my ( $gobj ) = getDNSSettings( $conf , $level, $lname );
 
     return undef unless $gobj ;
 
     my $gridkeys = $gobj->dnssec_trusted_keys();
-
-    print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
 
     # create and add the key object
     # [ ] hope that it isn't already there...
@@ -594,7 +613,7 @@ sub publishKey {
     $gobj->dnssec_trusted_keys( $gridkeys );
 
     $session->modify( $gobj );
-    getSessionErrors( $session , "publishKey : modify Infoblox::Grid::DNS"); 
+    getSessionErrors( $session , "publishKey : $level : $lname : $domain"); 
 
     return 1 ;
 
@@ -603,11 +622,12 @@ sub publishKey {
 #
 # remove a key to the grid properties
 #   disco(ontinue)Key
+#
+# we can pass either a kerRR or an ID for a key,
+# Either will work
 # 
 sub discoKey {
-    my ( $conf , $domain , $keyrr , $id ) = @_ ;
-
-    return if $TESTKEYS ;
+    my ( $conf , $level, $lname, $domain , $keyrr , $id ) = @_ ;
 
     # now try and connect to the grid and make some other settings
     my $session = startSession( $conf );  
@@ -623,26 +643,28 @@ sub discoKey {
 
     print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
 
-    #
     # we can't use the anchors already in the config, 
     # we may have done things in a previous loop and that altered the
     # config. So we have to refresh the data direct from the grid
 
     # So just pull them again from the grid
+
+    my $gobj = getDNSSettings( $conf , $level , $lname );
+    my $anchors = getObjectAnchors( $gobj );
+
+    print Dumper ( (caller(0))[3] , $anchors ) if $DEBUG ;
+
+    # all the keys for DNS settings in the PAPI are in a single list,
+    # and we have indexed them for convenience.
     # these are indexed by domain and GID, ( to avoid conflicts )
     #     'com' => {
     #       '30909' => {
     #     'org' => {
     #       '21366' => ...
 
-    my ( $anchors , $gobj ) = getAnchors( $conf );
-
-    print Dumper ( (caller(0))[3] , $anchors ) if $DEBUG ;
-
     # now just walk this index, and remove the key we want
 
     my $newkeys = [];
-
     foreach my $dom ( keys %{ $anchors } ) {
         foreach my $atag ( keys %{ $anchors->{$dom} } ) {
             if ( $dom eq $domain && $atag == $id ) {
@@ -654,10 +676,12 @@ sub discoKey {
         }
     }
 
+    return if $TESTKEYS ;
+
     $gobj->dnssec_trusted_keys( $newkeys );
 
     $session->modify( $gobj );
-    getSessionErrors( $session , "discokey : modify Infoblox::Grid::DNS"); 
+    getSessionErrors( $session , "discokey : $level : $lname : $domain"); 
 
     return 1 ;
 
@@ -847,17 +871,17 @@ sub queryAndIndexSigs {
 #
 
 sub validateDomainKeys {
-    my ( $conf , $domain ) = @_ ;
+    my ( $conf , $level, $lname , $domain ) = @_ ;
 
     # [ ] we need to know view/member context as well
 
-    logit("validate : $domain : in DNS");
+    logit("validate : $level : $lname : $domain : in DNS");
 
     # now get all the keys from the trust anchors These will be
     # indexed by the GID
-    my $anchors = $conf->{anchors}{$domain} ;
+    my $anchors = $conf->{anchors}{$level}{$lname}{$domain} ;
     unless ( $anchors ) {
-        logerror("validate : no active trust anchors for $domain");
+        logerror("validate : no active trust anchors in NIOS for $domain");
         return undef ;
     }
 
@@ -992,13 +1016,15 @@ sub checkAllKeys {
     foreach my $level ( sort keys %{ $conf->{domains} } ) {    
         foreach my $lname ( sort keys %{ $conf->{domains}{$level} } ) {    
             foreach my $domain ( @{ $conf->{domains}{$level}{$lname} } ) {
+                logit( "--------------------" );
                 logit( "process keys : $level : $lname : $domain" );
 
 # Step 1 , 
 #    Query DNS for the current valid trust anchors and their state
 
                 # punt a domain to DNS, get back the state of all ids
-                my $validIDs = validateDomainKeys( $conf , $domain );
+                my $validIDs = validateDomainKeys( $conf , 
+                    $level, $lname ,$domain );
 
                 # if there was a DNS error, we don't return anything
                 next unless $validIDs ;
@@ -1121,11 +1147,12 @@ sub checkState {
     # and aren't new
     # someone may have added something to the gui,
 
-    my $anchors = $conf->{anchors}{$domain} ;
+    my $anchors = $conf->{anchors}{$level}{$lname}{$domain} ;
     foreach my $id ( sort {$a <=> $b} keys %{ $anchors } ) {
         unless ( $gdata->{$id} or $validKeyIDs->{$id} ) {
             logerror( "state : $id : anchor is unknown -> delete");
-            discoKey( $conf , $domain , undef , $id );
+            discoKey( $conf , $level , $lname,
+                $domain , undef , $id );
         }
     }
 
@@ -1195,7 +1222,8 @@ sub checkState {
 #                     print Dumper ( $grec );
 
                     updateKey( $conf , $grec , $krec->{rdata} );
-                    publishKey( $conf , $domain , $krec->{rdata} );
+                    publishKey( $conf , $level , $lname ,
+                        $domain , $krec->{rdata} );
 
                 }
                 else {
@@ -1233,7 +1261,8 @@ sub checkState {
                 # this is no longer a trust anchor
                 $grec->{state} = 'revoked';
                 updateKey( $conf , $grec , $krec->{rdata} );
-                discoKey( $conf , $domain , $krec->{rdata} );
+                discoKey( $conf , $level, $lname,
+                    $domain , $krec->{rdata} );
             }
             else {
                 # we should never get here
@@ -1261,7 +1290,8 @@ sub checkState {
                 $grec->{id} = $krec->{rdata}->keytag(),
                 $grec->{state} = 'revoked';
                 updateKey( $conf , $grec , $krec->{rdata} );
-                discoKey( $conf , $domain , $krec->{rdata} );
+                discoKey( $conf , $level, $lname,
+                    $domain , $krec->{rdata} );
             }
             else {
                 # we should never get here
@@ -1376,29 +1406,25 @@ sub setMemberNS {
     my $memberinfo ;
     my @cleanmembers ;
     my $newobj ;
+
+    # first see if we even have a valid member to modify, if not
+    # don't make any changes. So we check all the members and stage
+    # the changes
     foreach my $mobj ( @members ) {
         my $name = $mobj->name();
         my $ip = $mobj->ipv4addr();
-        my $state = "";
 
-        # see if this member is the query member
-        # and track it for cleanup
-        $state = getAttributes( $mobj , 'RFC5011Type' );
-        push @cleanmembers , $mobj  if $state ;
-#         if ( $mobj->extensible_attributes()
-#             && $mobj->extensible_attributes()->{RFC5011}
-# #             ) {
-#                 $state = $mobj->extensible_attributes()->{RFC5011} ;
-#         }
+        my $state = getAttributes( $mobj , 'RFC5011Type' );
 
-        # OR if this is the new member
+        # see if this member is the new query member
         if ( $name eq $member ) {
             logit( "setting $member as query nameserver" );
             $newobj = $mobj ;
         }
-
-        # we could have overlaps here if you re-set the current
-        # nameserver member, but that will be OK
+        # and track other members for cleanup
+        elsif ( $state ) {
+            push @cleanmembers , $mobj;
+        }
 
         $memberinfo .= "  $name : $ip : $state\n";
     }
@@ -1591,7 +1617,8 @@ sub initConfig {
     return unless $session ;
 
     # Create some EAs
-    foreach my $ea ( qw( RFC5011Type
+    foreach my $ea ( qw( 
+                RFC5011Type
                 RFC5011Time
                 RFC5011State
                 RFC5011Level
@@ -1665,7 +1692,7 @@ sub loadGridConf {
     }
 
     # and get any existing trust anchors
-    ( $conf->{anchors} ) = getAnchors( $conf );
+    $conf->{anchors} = getAnchors( $conf );
 
     print Dumper ( (caller(0))[3] ) if $DEBUG > 1 ;
     showConfig( $conf ) if $DEBUG > 1 ;
@@ -1928,11 +1955,89 @@ sub getAnchors {
     );
     getSessionErrors( $session ,"getAnchors : Infoblox::Grid::DNS"); 
 
+    # no grid properties is bad
     return undef unless $gobj ;
 
     my $data = {};
-    # walk all the anchors, and index them by domain and key
-    foreach my $gkey ( @{ $gobj->dnssec_trusted_keys() } ) {
+    $data->{grid}{default} = getObjectAnchors( $gobj );
+
+    # then find any member or view level settings
+
+    # you can't store EAs on a Infoblox::Grid::Member::DNS object,
+    # So we have to get the list of members first
+    my @members = $session->get(
+        object => "Infoblox::Grid::Member",
+        extensible_attributes => { RFC5011Level => { value => "member" } }
+    );
+    foreach my $mobj ( @members ) {
+        my $mname = $mobj->name();
+        my ( $mdns ) = $session->get(
+            object => "Infoblox::Grid::Member::DNS",
+            name => $mname,
+        );
+
+        $data->{member}{$mname} = getObjectAnchors( $mdns );
+    }
+
+    # and the views
+    my @views = $session->get(
+        object => "Infoblox::DNS::View",
+        extensible_attributes => { RFC5011Level => { value => "view" } }
+    );
+    foreach my $vobj ( @views ) {
+        my $vname = $vobj->name();
+        $data->{view}{$vname} = getObjectAnchors( $vobj );
+    }
+
+    return $data ;
+
+}
+
+#
+# returns a REF to DNS settings somwwhere
+# requires level and name ( grid / default )
+#
+sub getDNSSettings {
+    my ( $conf , $level , $name ) = @_ ;
+
+    my %query = (
+        object => "Infoblox::Grid::DNS",
+    );
+
+    if ( $level eq 'member' ) {
+        %query = (
+            object => "Infoblox::Grid::Member::DNS",
+            name => $name,
+        );
+    }
+    elsif ( $level eq 'view' ) {
+        %query = (
+            object => "Infoblox::DNS::View",
+            name => $name,
+        );
+    }
+
+    my $session = startSession( $conf );  
+    return unless $session ;
+
+    my ( $obj ) = $session->get( %query );
+    getSessionErrors( $session ,"getDNSSettings : $level : $name"); 
+    return $obj ;
+
+}
+
+#
+# extract and format the dnssec_trusted_keys
+# for a PAPI object
+#
+sub getObjectAnchors {
+    my ( $obj ) = @_ ;
+
+    my $data = {};
+
+    return unless $obj->dnssec_trusted_keys() ;
+
+    foreach my $gkey ( @{ $obj->dnssec_trusted_keys() } ) {
 
         my $alg = getAlgorithm ( $gkey->algorithm() );
         my $k = $gkey->key();
@@ -1945,17 +2050,10 @@ sub getAnchors {
         # to any revoke or other flags
 
         my $id = $keyrr->keyid();
-
-#         $data->{ $domain }{ $id } = {
-#             rdata => $keyrr,
-#             object => $gkey
-#         };
-
         $data->{ $domain }{ $id } = $gkey ;
     }
 
-    return ( $data , $gobj );
-
+    return $data ;
 }
 
 #
