@@ -136,6 +136,8 @@ capstan : an implementation of RFC 5011 for Infoblox
 
   -a <domain>   Add a domain to track
   -r <domain>   Remove a domain to track
+  -v <view>     Add/Remove a domain from this view
+  -m <member>   Add/Remove a domain from this member
   -l            List tracked domains
   -k            List tracked keys
 

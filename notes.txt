@@ -156,8 +156,8 @@ Capstan
 
     [x] -a  # add a domain
 
-    [ ] -v  # view ( add domain to just this view )
-    [ ] -m  # member ( add domain to just this member )
+    [x] -v  # view ( add domain to just this view )
+    [x] -m  # member ( add domain to just this member )
 
     [x] -r  # remove a domain
     [x] -l  # list domains
@@ -214,7 +214,7 @@ Capstan
     [x] An invalid key is considered missing
         because it is not in the 'validated DNSKEY RRSet'
 
-[ ] grid or MEMBER level anchors, not views ?
+[x] grid or MEMBER level anchors, not views ?
     [x] need to store grid/member/view in getAnchors();
 
     [x] Fix ALL calls to getanchors...
@@ -224,8 +224,8 @@ Capstan
         DNS props when calling 'pub/discokey'
 
         - Need a single call.
-        [ ] call my $obj = getDNSSettings( $conf , $level , $name )
-        [ ] call my $adata = getObjectAnchors ( $obj );
+        [x] call my $obj = getDNSSettings( $conf , $level , $name )
+        [x] call my $adata = getObjectAnchors ( $obj );
 
         [x] We ALWAYS know the level and name so just
             pass it to a generic getDNSSettings() call
@@ -234,11 +234,11 @@ Capstan
             No - because one is specific and
             one gets ALL settings
 
-    [ ] tag the view
+    [x] tag the view
         RFC5011Level = 'view'
-    [ ] tag the member, 
+    [x] tag the member, 
         RFC5011Level = 'member'
-        [ ] need to do this on the GRID menber, can't set it
+        [x] need to do this on the GRID menber, can't set it
             on any DNS props
 
 [-] REST API ? 
@@ -255,7 +255,7 @@ Capstan
 
     [x] store the DNS QUERY member as an EA on the member
             RFC5011 == 'nameserver'
-    [ ] store a managed member as an EA on the member
+    [x] store a managed member as an EA on the member
             RFC5011Managed == 'true'
 
     [x] store the KEY and Domain info in 'RFC5011.local' zone
