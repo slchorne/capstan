@@ -583,17 +583,16 @@ sub publishKey {
 
     logit( "Trusting key $id for $domain");
 
+    print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
+
     #
-    # avoid race conditions with the config, and 
-    # just call getAnchors(); ( but we don't use the $anchors hash )
-#     my ( $anchors , $gobj ) = getAnchors( $conf );
+    # avoid race conditions with the config, and just get the
+    # DNS settings direct from the grid
     my ( $gobj ) = getDNSSettings( $conf , $level, $lname );
 
     return undef unless $gobj ;
 
     my $gridkeys = $gobj->dnssec_trusted_keys();
-
-    print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
 
     # create and add the key object
     # [ ] hope that it isn't already there...
@@ -612,7 +611,7 @@ sub publishKey {
     $gobj->dnssec_trusted_keys( $gridkeys );
 
     $session->modify( $gobj );
-    getSessionErrors( $session , "publishKey : modify Infoblox::Grid::DNS"); 
+    getSessionErrors( $session , "publishKey : $level : $lname : $domain"); 
 
     return 1 ;
 
@@ -642,35 +641,28 @@ sub discoKey {
 
     print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
 
-    #
-    # [ ] this is ugly that we get ALL the keys,
-    # We should just get keys for this level/name
-    #
     # we can't use the anchors already in the config, 
     # we may have done things in a previous loop and that altered the
     # config. So we have to refresh the data direct from the grid
 
     # So just pull them again from the grid
+
+    my $gobj = getDNSSettings( $conf , $level , $lname );
+    my $anchors = getObjectAnchors( $gobj );
+
+    print Dumper ( (caller(0))[3] , $anchors ) if $DEBUG ;
+
+    # all the keys for DNS settings in the PAPI are in a single list,
+    # and we have indexed them for convenience.
     # these are indexed by domain and GID, ( to avoid conflicts )
     #     'com' => {
     #       '30909' => {
     #     'org' => {
     #       '21366' => ...
 
-    my $allanchors = getAnchors( $conf );
-    my $gobj = getDNSSettings( $conf , $level , $lname );
-
     # now just walk this index, and remove the key we want
 
     my $newkeys = [];
-    my $anchors = $allanchors->{$level}{$lname};
-
-    print Dumper ( (caller(0))[3] , $anchors ) if $DEBUG ;
-
-    # all the keys for DNS settings are in a single list,
-    # regardless of domain, so we have to walk all of them and match
-    # them to the config
-
     foreach my $dom ( keys %{ $anchors } ) {
         foreach my $atag ( keys %{ $anchors->{$dom} } ) {
             if ( $dom eq $domain && $atag == $id ) {
@@ -687,7 +679,7 @@ sub discoKey {
     $gobj->dnssec_trusted_keys( $newkeys );
 
     $session->modify( $gobj );
-    getSessionErrors( $session , "discokey : modify Infoblox::Grid::DNS"); 
+    getSessionErrors( $session , "discokey : $level : $lname : $domain"); 
 
     return 1 ;
 

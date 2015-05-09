@@ -217,13 +217,17 @@ Capstan
 [ ] grid or MEMBER level anchors, not views ?
     [x] need to store grid/member/view in getAnchors();
 
-    [ ] Fix ALL calls to getanchors...
-    [ ] Fix ALL refs to $conf->anchors
+    [x] Fix ALL calls to getanchors...
+    [x] Fix ALL refs to $conf->anchors
 
-    [ ] need a way to get a REF to the
+    [x] need a way to get a REF to the
         DNS props when calling 'pub/discokey'
 
-        [ ] We ALWAYS know the level and name so just
+        - Need a single call.
+        [ ] call my $obj = getDNSSettings( $conf , $level , $name )
+        [ ] call my $adata = getObjectAnchors ( $obj );
+
+        [x] We ALWAYS know the level and name so just
             pass it to a generic getDNSSettings() call
 
         [-] Can we use this for getAnchors ??
