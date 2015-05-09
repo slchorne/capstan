@@ -1,3 +1,4 @@
+
 Overview:
 
 The objective is to get valid 'Trust Anchors' into the
@@ -13,89 +14,284 @@ And thus used by the resolver component of the nameserver
 As per the spec it Should only manage anchors for known trust points and
 only for keys that have the SEP bit set
 
+Speaking to Ulf Ekberg @infoblox.com, from the BIND/Eng side of things:
+
+If we check everything every hour we are well within any hold-down timers
+and revocation timers, so there is no need for an adavnced TTL monitor,
+just re-check everything 1/hour
+
+You can't add a domain to trust unless you also provide a key for that
+domain, this MUST be an out of band operation to bootstrap the process.
+This key will also be used to validate any new keys
+
 -----------------------------------
 Design and implementation
 
 Capstan
 
+[ ] publish to github
+
+[ ] Re-do a test from scratch
+
+[ ] statemachine needs to detect invalid anchors
+    added via the GUI
+    [ ] marks them as missing ??
+
+[ ] finish the perl doc
+    [ ] readme.pod (works with github)
+    perldoc -u capstan.pl > README.pod
+
+[x] testing
+
+    basic test or demo plan
+
+    ./capstan.pl --init --gm 10.64.128.20 --user admin --pass infoblox -f
+    ./capstan.pl -a org -x 208.69.40.3
+    ./capstan.pl -r org
+    ./capstan.pl -a org -x 208.69.40.3
+    ./capstan.pl -x 208.69.40.3
+        # wait 30 secs
+    ./capstan.pl -x 208.69.40.3
+        # remove one of the keys from the zone
+    ./capstan.pl -x 208.69.40.3
+        # wait 30 secs
+    ./capstan.pl -x 208.69.40.3
+    ./capstan.pl -x 208.69.40.3 -w new
+    ./capstan.pl -x 208.69.40.3
+    ./capstan.pl -x 208.69.40.3 -w revoke
+    ./capstan.pl -x 208.69.40.3 -w remove
+    ./capstan.pl -x 208.69.40.3 -w miss
+        # wait 30 secs
+    ./capstan.pl -x 208.69.40.3
+        # wait 30 secs
+    ./capstan.pl -x 208.69.40.3
+
+    [t] bad DNS resolver
+        ./capstan.pl
+
+    [t] add a domain
+        [t] add domain with 1 key
+        [t] add domain with all keys
+        ./capstan.pl -a org -x 208.69.40.3
+
+    [t] remove a domain
+        ./capstan.pl -r org 
+
+    [t] publish pending keys
+        [t] no domains configured
+        [t] some domains configured
+        ./capstan.pl -x 208.69.40.3
+
+    [x] create some fake events...
+        [x] need a '-w miss|add|revoke|remove' hidden command
+
+    [t] track a missing key
+        ./capstan.pl -x 208.69.40.3 -w miss
+
+    [t] add a new key
+        [x] remove a new key
+        ./capstan.pl -x 208.69.40.3 -w new
+        ./capstan.pl -x 208.69.40.3
+
+    [t] revoke a key
+        ./capstan.pl -x 208.69.40.3 -w revoke
+         id : 9795
+        
+    [t] remove a key
+        ./capstan.pl -x 208.69.40.3 -w remove
+
+    [-] invalid key 
+        treated as missing
+        but fake an error message in the right place
+        ./capstan.pl -x 208.69.40.3 -w invalid
+        keystate == 'error'
+
+    [-] unsigned key 
+        treated as missing
+        keystate == 'nosig'
+
+[x] digests and tags
+    the keytag could be calcuated and used instead of the digest
+    But the tag changes if the key is revoked (as it's calculated from
+    the flags.
+
+    [x] use a variation of the one defined in RFC4034
+    Appendix B, with the 'flags','protocol' and 'algorithm' are all set
+    to 0.
+
+[ ] locking
+    [ ] need to lock the script in case someone tries an admin function
+        while it is processing from a cron job ?
+
+    [ ] or are there no risks of collisions, anyway ?
+        since admin functions don't add/remove anchors
+
 [ ] Command line options
 
-    [ ] --init  # initialise the zone, storage etc
-    [ ] -C  # show the config
-    [ ] -m  # set the Nameserver member
-            # and list all members if none set
-    [ ] -p  # passive, don't restart services
-    [ ] -t  # test all key states ( doesn't modify database )
-    [ ] -s  # re-sync all keys (quite the hammer)
-    [ ] -a  # add a domain
-    [ ] -r  # remove a domain
-    [ ] -l  # list domains
-    [ ] -k  # list all key states
-    [ ] --user   # add/configure the login account
+    [x] --init  # initialise the zone, storage etc
+    [x] -C  # show the config
 
-[ ] need a nameserver to resolve the KSKs 
-    [ ] set an EA on one of the members.
+    [x] -ns  # set the Nameserver member
+             # and list all members if none set
 
-[ ] grid or view level anchors
+    [x] -p  # passive, don't restart services
+    [x] -t  # test all key states ( doesn't modify database )
+    [-] -s  # re-sync all keys (quite the hammer)
+            # rebuilds from a dead/broken script
+
+        This mode isn't required since the normal state machine
+        just handles things correctly as it keys off the 
+        current trust anchors
+
+        worst case you add and remove the zones ?
+
+            # only active trust anchors are validated, 
+            # and any other revoked keys are kept
+            # any other keys are removed from the system
+
+    [x] -a  # add a domain
+
+    [ ] -v  # view ( add domain to just this view )
+    [ ] -m  # member ( add domain to just this member )
+
+    [x] -r  # remove a domain
+    [x] -l  # list domains
+    [x] -k  # list all key states
+    [x] --user   # add/configure the login account
+
+    [x] -x n.n.n.n use different resolver
+    [x] -w <state> fake DNS states on RRs
+
+[x] add a domain
+    You must bootstrap a domain with a known key
+    [x] a key must already exist in the grid properties
+        [x] use this key for bootstrap
+    [x] just adds it to the tracker,
+
+    [-] report discovered domains as part of --init ?
+        Nah, just use '-l'
+
+[x] need a nameserver to resolve the KSKs 
+    [x] set an EA on one of the members.
+
+[x] merge validateAnchor() and validateDomainKeys()
+    [x] check for invalid keys in the grid
+
+[x] track missing keys
+    count how long it has been missing
+
+[ ] validation
+    [x] a RRSIG applies to all DNSKEYS
+    [x] validate a sig by the matching key
+    [x] use the keytag (id) to match key <-> signature
+
+    [x] revoked keys still need to be valid
+
+    [x] always validate from known KEYS only.
+        [x] compare the queried key to a key in the grid
+            use that to match trusted keys
+        [x] never add a key that wasn't checked by a trusted key
+
+        [x] if a key fails validation, that key is bad,
+            and impicitly the keyset may end up bad,
+            when all keys fail.
+
+        [x] injected (bad) keys will never make it
+            into the RRSEt, until they are in a valid
+            signature, signed by a known key
+
+            [x] report errors with injected keys
+                (These could be new keys on hold)
+                
+    [x] A key that fails to validate the set is invalid
+    [x] A key with no signature is invalid
+
+    [x] An invalid key is considered missing
+        because it is not in the 'validated DNSKEY RRSet'
+
+[ ] grid or MEMBER level anchors, not views ?
+    [x] how to set the location ?
+        EAs, and insert into the TXT FQDN
+    [ ] need to store grid/member/view in getAnchors();
 
 [-] REST API ? 
     NOT supported for trust anchors, need to use PAPI.
 
-[ ] state storage
+[x] state storage
     [x] don't bother with the overhead of localDb
     [-] Just store all the pending key info in a text file on disk
         or use 'storable' ?
 
-    [ ] login info needs to be on the entiry,
-        [ ] use storable to keep the config for the useraccount
-            [ ] just store the HTTP header info
+    [x] login info needs to be on the entiry as a local file,
+        [x] use storable to keep the config for the useraccount
+            [-] just store the HTTP header info
 
-    [ ] store the KEY info in 'RFC5011.local' zone
-        [ ] use TXT records and the REST api 
-        [ ] don't add any nameservers to the zone, disable it
+    [x] store the DNS QUERY member as an EA on the member
+            RFC5011 == 'nameserver'
+    [ ] store a managed member as an EA on the member
+            RFC5011Managed == 'true'
 
-    [ ] auto-configure the zone on init, first run
+    [x] store the KEY and Domain info in 'RFC5011.local' zone
+        [x] don't add any nameservers to the zone, disable it
+        [x] use TXT records and the PAPI
+            ( REST would be better, but it simplifies syntax )
+        [x] the zone is ALWAYS in the default view
 
-    [ ] only store the active keys on the grid,
+        [ ] need to track records for both grid and other levels
+            so dotted names aren't going to directly cut it
+            [ ] default.grid.RFC5011.infoblox.local
+                RFC5011Managed == 'grid'
+                RFC5011Location == 'grid'
+            [ ] member.name.member.RFC5011.infoblox.local
+                RFC5011Managed == 'member'
+                RFC5011Location == 'member.name'
+            [ ] view.name.view.RFC5011.infoblox.local
+                RFC5011Managed == 'view'
+                RFC5011Location == 'view.name'
+
+        [ ] add the domain as 'domain.grid|member.namespace'
+            RFC5011Managed == 'grid|member'
+            RFC5011 == 'domain'
+        [ ] add the key as 'ID.key.domain.grid|member.namespace'
+            RFC5011 == 'grid'
+
+    [x] auto-configure the zone on init, first run
+
+    [x] only store the active trust anchors on the grid,
         put the rest of the config into the zone
 
-[ ] re-verify any of the records when reading from the file, so you don't
+[x] re-verify any of the records when reading from the file, so you don't
 risk someone replacing with data with bad data
-    [ ] don't store the keys or signatures
-    [ ] only store the required fields to re-do the lookup,
-        [ ] key id = 33878
+    [x] don't store the keys or signatures
+    [x] only store the required fields to re-do the lookup,
+        [x] key id = 33878
 
-[ ] pull any new keys added to the grid from outside this process...
+[x] pull any new keys added to the grid from outside this process...
+    [x] ONLY if they are part of a tracked domain,
+        [x] validate these keys
+    [x] this can also be used to bootstrap a new domain
 
-[ ] we should validate the signing of the key, not just plain import it
-    [ ] need to walk the signing chain
+[x] we should validate the signing of the key, not just plain import it
+    [-] need to walk the signing chain
 
-[ ] Platform the entity will run on is LINUX.
+[ ] CRON or Daemon ?
+    [ ] document the CRON setup
 
-[ ] CRON or Daemon
-    [ ] Periodic intervals for running the script is OK for T-Systems.
     [ ] Run as a cron job at a fine grained period.
         smaller than the window of the sleep timers
+        smaller than the window of the revocation windows
 
         "Given that the minimum refresh time is one hour, such a fixed
         interval should be one hour in order to conform to the RFC"
 
-[ ] pending keys get stored in the dataset until they are considered valid
-    [ ] just follow the rules of the statemachine
+[x] pending keys get stored in the dataset until they are considered valid
+    [x] just follow the rules of the statemachine
 
-[ ] can't use a pure-perl net::dns::sec - will be platform dependent. ?
+[x] revoking keys - 
+    [x] a revoked key must still be in the signed list
+        ( as this is how the owner verifies this key )
+        [x] revoked key must pass validation
+    [x] check statemachine for revokation rules
 
-------------
-General notes:
-
-What they want is something like trustMan: ?
-
-https://www.dnssec-tools.org/wiki/index.php/Trustman 
-
-[x] do we care about pending keys ? Is this something that we can rely on
-from bind ? If the key appears, then disappears later, who cares, the
-entity will just add/remove it right ?
-    [x] or is this related to the 'bad key' injection problem ?
-    [x] yes, since you can't really trust the nameserver chain of query
-
+[-] can't use a pure-perl net::dns::sec - will be platform dependent. ?
 
