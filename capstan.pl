@@ -141,14 +141,16 @@ capstan : an implementation of RFC 5011 for Infoblox
   -l            List tracked domains
   -k            List tracked keys
 
+  -ns <name>    Set the query nameserver to this member
+
   -help      Show a brief help message
   -C         Show the current configuration
   -c         Show just the local configuration
-  --init     Initialise the system (only runs once)
-             requires --gm and --user
 
-  -ns <name>  Set the query nameserver to this member
-  --user     Set the username (and password) for login
+  --init         Initialise the system (only runs once)
+                 requires --gm and --user
+    --gm <name>  Set the Grid Master
+    --user       Set the username (and password) for login
 
 =head1 DESCRIPTION
 
@@ -1228,7 +1230,7 @@ sub checkState {
                 }
                 else {
                     # it's valid but not ready yet
-                    logit( "state : $rrid : pending -> onhold");
+                    logit( "state : $rrid : pending -> pending : onhold");
                 }
             }
             else {
@@ -1724,8 +1726,8 @@ sub loadLocalConfig {
 
     if ( $XRES ) {
         # developer hacks
-        $data->{holdaddtime} = 20;
-        $data->{holdremtime} = 20;
+        $data->{holdaddtime} = 60;
+        $data->{holdremtime} = 60;
     }
 
     print Dumper ( $data ) if $DEBUG > 1 ;
@@ -1750,7 +1752,7 @@ The IETF has a number of drafts (and RFCs) relating to the storage and
 management of trust anchors, while at the same time acknowleging the
 conflicts that may occur when applying these rules to RFC5011.
 
-This is further compounded by the way Trust anchors are stored on the
+This is further compounded by the way trust anchors are stored on the
 infoblox grid, and that RFC5011 requires you to track DNSKEYS
 that are not in the published RRSET for a domain.
 
@@ -1761,7 +1763,7 @@ merely use them to prime queries for records in the DNS.
 It should also be noted tht while DNSKEY RRs and RRSIG rrs can be related
 via the 'keytag', this tag will change if a key is revoked, so that method
 can't be used to track a key through it's lifecycle. The DS signature
-can't be used for simliar reasons.
+can't be used for simliar reasons. (see the section on 'KEYTAGS')
 
 As such, the system uses the following components to track a trust
 anchor through its life cycle:
@@ -1819,12 +1821,9 @@ e.g:
 
 The GRIDID is not the keytag for the record, as this could change if a
 key is revoked or similar. Instead it is a variation of the keytag that
-ignores any flags that are set on the RR. As such it can't be directly
-used to match a queried RR to one in the config. Instead you must
-calculate the 'gridid' for the RR and match against that.
-
-The algorithm used is a variation of the one defined in RFC4034 Appendix
-B, with the 'flags','protocol' and 'algorithm' are all set to 0.
+ignores any flags that are set on the RR.  As such, the DNSKEY keytag
+can't be directly used to match a queried RR to one in the config.  ( see
+the section on KEYTAGS )
 
 The KEY is not stored on the record, just the ID that is then used to
 find a matching record from a valid current DNS query.
@@ -2063,6 +2062,8 @@ sub getObjectAnchors {
 sub restartServices {
     my ( $conf ) = @_ ;
 
+    logit( "--------------------" );
+
     if ( $PASSIVE ) {
         logwarn("passive mode : no DNS service restart");
         return ;
@@ -2224,15 +2225,42 @@ sub logit {
     print localtime() . " : $level : $message\n";
 }
 
+=head1 KEYTAGS
+
+Why do I see 2 different keytags or ids for a DNSKEY ?
+
+The keytag algorithm is calculated from both the key and the flags in the
+DNSKEY record.  While this tag can be used to match a key to it's
+signature, if you REVOKE a key you change the flags, and thus the tag.  So
+it is no longer possible to use the tag to compare a revoked key to its
+unrevoked version.
+
+This tool calculates a new, different, tag that ignores all the flags and
+just calculates the value from the key itself.  The logging reports both
+tags so you can compare resulds from DNS queries to results calculated
+internally by this tool.
+
+The algorithm used is a variation of the one defined in RFC4034 Appendix
+B, with the 'flags','protocol' and 'algorithm' are all set to 0.
+
+
 =head1 DIAGNOSTICS
 
 Use '-d N' to run at different diagnostic/debug levels
 
 The higher the number, the more feedback you get
 
+=head2 Messages
+
+Messages are logged with either an 'INFO' , 'WARN' or 'ERROR' header:
+
 =over
 
-=item C<< Error message here, perhaps with %s placeholders >>
+=item C<< ERROR : The record '8763.key....' already exists >>
+
+You are trying to add or track a domain that is already in the tracking
+system.  This is mostly benign, but the state of that key will be
+incorrect until the system runs again and re-validates all the keys.
 
 [Description of error here]
 
