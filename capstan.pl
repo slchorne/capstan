@@ -204,9 +204,11 @@ Example: Add '.org' at the grid level for tracking
   ./capstan.pl -a org
 
 Example: Add '.org' at the view level for tracking
+
   ./capstan.pl -a org -v internal
 
 Example: Add '.org' at the member level for tracking
+
   ./capstan.pl -a org -m ns1.myco.com
 
 =head3 Update your anchors, as required

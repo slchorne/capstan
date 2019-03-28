@@ -98,9 +98,11 @@ DDEESSCCRRIIPPTTIIOONN
          ./capstan.pl -a org
 
        Example: Add '.org' at the view level for tracking
+
          ./capstan.pl -a org -v internal
 
        Example: Add '.org' at the member level for tracking
+
          ./capstan.pl -a org -m ns1.myco.com
 
        _U_p_d_a_t_e _y_o_u_r _a_n_c_h_o_r_s_, _a_s _r_e_q_u_i_r_e_d
