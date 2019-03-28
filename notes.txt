@@ -31,15 +31,21 @@ Capstan
 
 [ ] publish to github
 
-[ ] Re-do a test from scratch
-
-[ ] statemachine needs to detect invalid anchors
-    added via the GUI
-    [ ] marks them as missing ??
+[x] Re-do a test from scratch
 
 [ ] finish the perl doc
     [ ] readme.pod (works with github)
     perldoc -u capstan.pl > README.pod
+
+[x] Demo
+
+[ ] clean up some messages
+    state : 8763 tag[9795] : unknown revoked -> valid
+                             ^^^^^^^^^^^^^^
+    state : 8763 tag[9795] : pending -> valid : offhold
+                                                ^^^^^^^        
+    state : 8763 tag[9795] : pending -> onhold
+                                        ^^^^^^
 
 [x] testing
 
@@ -48,6 +54,9 @@ Capstan
     make the nameserver recurse to the real world
 
         # move the org key from the grid
+    ./capstan.pl --init
+    ./capstan.pl --init --gm 10.64.128.20 --user admin 
+    ./capstan.pl --init --gm 10.64.128.20 --user admin -f
     ./capstan.pl --init --gm 10.64.128.20 --user admin --pass infoblox -f
     ./capstan.pl -a org -x 208.69.40.3
         # move the org key back into place
