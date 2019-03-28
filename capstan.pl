@@ -169,7 +169,7 @@ You're also going to need DNS query access to the outside world, as this script 
 
 =head2 Quickstart
 
-Capstan is a scheduled script that will manage and update the trust anchors for DNSSec zones. It does thus by tracking state with a custom zone on the infoblox grid (rfc5011.local) and adding EAs on both these records, the zone, and the trust anchors themselves.
+Capstan is a scheduled script that will manage and update the trust anchors for DNSSec zones. It does this by tracking state with a custom zone on the infoblox grid (rfc5011.local) and adding EAs on these records, the zone, and the trust anchors themselves. See the section on 'Data Storage' for more detail
 
 It is designed to be robust enouth to handle admins making changes directly on the grid, outside this script.
 
@@ -180,6 +180,8 @@ Almost all the configuration is stored on the grid, which should help with disas
 You need to bootstrap the management zone and create a local config file:
 
  ./capstan.pl --init --gm my.grid.master --user admin
+
+You will be prompted for a password...
 
 =head3 Define a resolver member
 
@@ -1521,7 +1523,7 @@ sub setMemberNS {
 
 Set or change the GM address/name that the system manages.
 
-This is usually done as part of the '--init' process, but may nttd to be
+This is usually done as part of the '--init' process, but may need to be
 updated as part of a grid re-configuration (E.g DR)
 
 =cut
@@ -2296,7 +2298,7 @@ unrevoked version.
 
 This tool calculates a new, different, tag that ignores all the flags and
 just calculates the value from the key itself.  The logging reports both
-tags so you can compare resulds from DNS queries to results calculated
+tags so you can compare results from DNS queries to results calculated
 internally by this tool.
 
 The algorithm used is a variation of the one defined in RFC4034 Appendix
@@ -2343,7 +2345,7 @@ incorrect until the system runs again and re-validates all the keys.
 Not all algorithms are supported, as a manual lookup table is required to
 convert beteen public and Infoblox supported algorithms
 
-Unicode may be a problem, dependong on the domain name being added as
+Unicode may be a problem, depending on the domain name being added as
 SEP.
 
 I have not yet thought through other incompatibilities, though there are
