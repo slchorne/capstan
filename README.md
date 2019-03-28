@@ -8,7 +8,7 @@ capstan : an implementation of RFC 5011 for Infoblox
 
      ./capstan.pl --init --gm my.grid.master --user admin
 
-     ./capstan.pl -a org 
+     ./capstan.pl -a org
      ./capstan.pl -a org -v internal
      ./capstan.pl -a org -m ns1.myco.com
 
@@ -33,6 +33,67 @@ capstan : an implementation of RFC 5011 for Infoblox
        --user       Set the username (and password) for login
 
 # DESCRIPTION
+
+## Prerequisites
+
+Capstan tries to use as few deps as possible, but it was unavoadable.
+you're going to need:
+
+    * Storable
+    * Term::ReadKey
+    * Digest::md5
+    * Net::DNS (and DNSSec extensions)
+    * Infobox.pm (until this gets ported to the REST API)
+
+You're also going to need DNS query access to the outside world, as this script needs to pull the keys from signed zones and trust anchor points.
+
+## Quickstart
+
+Capstan is a scheduled script that will manage and update the trust anchors for DNSSec zones. It does thus by tracking state with a custom zone on the infoblox grid (rfc5011.local) and adding EAs on both these records, the zone, and the trust anchors themselves.
+
+It is designed to be robust enouth to handle admins making changes directly on the grid, outside this script.
+
+Almost all the configuration is stored on the grid, which should help with disaster recovery.
+
+### Initialise the system.
+
+You need to bootstrap the management zone and create a local config file:
+
+    ./capstan.pl --init --gm my.grid.master --user admin
+
+### Define a resolver member
+
+You need to use a grid member to make your DNS queries to the outside world, This ensures that the grid (in theory) has the same view of the trust anchors as this script. So you need to set that up (once) in the config.
+
+    ./capstan.pl -ns my.grid.nameserver
+
+Obviously, this member needs to be able to resolve to the internet
+
+### Manually add some trust anchors
+
+You must prime the system by adding an initial trust anchor for whatever zones you want to track. this is a bacic securlty measure and the system will error out if it can't find a matching anchor.
+
+You do this through the Infoblox Grid GUI.
+
+### Add some zones to manage
+
+Then you need to add some trust anchor points, and decide if you want to track them on a grid, view or member level (you can add trust anchors at any of these points)
+
+Example: Add '.org' at the grid level for tracking
+
+    ./capstan.pl -a org
+
+Example: Add '.org' at the view level for tracking
+  ./capstan.pl -a org -v internal
+
+Example: Add '.org' at the member level for tracking
+  ./capstan.pl -a org -m ns1.myco.com
+
+### Update your anchors, as required
+
+Now you can just run the script periodically to keep stuff in sync
+
+    ./capstan.pl
 
 # OPTIONS
 
@@ -59,14 +120,14 @@ Remove a domain to the tracker
 This will remove the matching TXT record in the rfc5011.local zone for
 the namespace of the tracked domain
 
-## -l 
+## -l
 
 List all the domains being tracked
 
 This will get all the TXT records in the rfc5011.local zone where the
 extensible\_attribute 'RFC5011Type' == 'domain'
 
-## -k 
+## -k
 
 List all the trust anchors being tracked
 
@@ -74,7 +135,7 @@ This will get all the TXT records in the rfc5011.local zone where the
 extensible\_attribute 'RFC5011Type' == 'key' and show what domain and area
 of the grid they relate to
 
-## -m &lt;grid.nameserver>
+## -ns &lt;grid.nameserver>
 
 Set the grid member to be used for DNS queries.
 
@@ -95,11 +156,11 @@ the grid.
 
 You will be prompted to enter the password
 
-## -c 
+## -c
 
 Show just the local configuration settings ( grid master, username , etc )
 
-## -C 
+## -C
 
 Show the complete configuration settings, including all tracked domains
 and keys
@@ -119,7 +180,7 @@ and extensible\_attributes FORCE
 The init process will :
 
     - create any required extensible_attributes
-    - create the zone 'rfc5011.Infoblox.local' 
+    - create the zone 'rfc5011.Infoblox.local'
     - set up any other required configuration
 
 # DATA STORAGE
@@ -263,7 +324,7 @@ I have not yet thought through other incompatibilities, though there are
 most certainly some. I don't like code that is longer than 72 characters
 per line, you may hate me for that.
 
-# BUGS 
+# BUGS
 
 No bugs have been reported. Yet.
 

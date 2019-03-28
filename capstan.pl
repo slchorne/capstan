@@ -128,7 +128,7 @@ capstan : an implementation of RFC 5011 for Infoblox
 
   ./capstan.pl --init --gm my.grid.master --user admin
 
-  ./capstan.pl -a org 
+  ./capstan.pl -a org
   ./capstan.pl -a org -v internal
   ./capstan.pl -a org -m ns1.myco.com
 
@@ -154,9 +154,66 @@ capstan : an implementation of RFC 5011 for Infoblox
 
 =head1 DESCRIPTION
 
-=for author to fill in:
-    Write a full description of the module and its features here.
-    Use subsections (=head2, =head3) as appropriate.
+=head2 Prerequisites
+
+Capstan tries to use as few deps as possible, but it was unavoadable.
+you're going to need:
+
+ * Storable
+ * Term::ReadKey
+ * Digest::md5
+ * Net::DNS (and DNSSec extensions)
+ * Infobox.pm (until this gets ported to the REST API)
+
+You're also going to need DNS query access to the outside world, as this script needs to pull the keys from signed zones and trust anchor points.
+
+=head2 Quickstart
+
+Capstan is a scheduled script that will manage and update the trust anchors for DNSSec zones. It does thus by tracking state with a custom zone on the infoblox grid (rfc5011.local) and adding EAs on both these records, the zone, and the trust anchors themselves.
+
+It is designed to be robust enouth to handle admins making changes directly on the grid, outside this script.
+
+Almost all the configuration is stored on the grid, which should help with disaster recovery.
+
+=head3 Initialise the system.
+
+You need to bootstrap the management zone and create a local config file:
+
+ ./capstan.pl --init --gm my.grid.master --user admin
+
+=head3 Define a resolver member
+
+You need to use a grid member to make your DNS queries to the outside world, This ensures that the grid (in theory) has the same view of the trust anchors as this script. So you need to set that up (once) in the config.
+
+ ./capstan.pl -ns my.grid.nameserver
+
+Obviously, this member needs to be able to resolve to the internet
+
+=head3 Manually add some trust anchors
+
+You must prime the system by adding an initial trust anchor for whatever zones you want to track. this is a bacic securlty measure and the system will error out if it can't find a matching anchor.
+
+You do this through the Infoblox Grid GUI.
+
+=head3 Add some zones to manage
+
+Then you need to add some trust anchor points, and decide if you want to track them on a grid, view or member level (you can add trust anchors at any of these points)
+
+Example: Add '.org' at the grid level for tracking
+
+  ./capstan.pl -a org
+
+Example: Add '.org' at the view level for tracking
+  ./capstan.pl -a org -v internal
+
+Example: Add '.org' at the member level for tracking
+  ./capstan.pl -a org -m ns1.myco.com
+
+=head3 Update your anchors, as required
+
+Now you can just run the script periodically to keep stuff in sync
+
+ ./capstan.pl
 
 =cut
 
@@ -186,9 +243,9 @@ setMemberNS( $conf , $NAMESERVER ) && exit if $NAMESERVER ;
 # to add to the config
 loadGridConf( $conf ) or exit;
 
-showConfig( $conf ) && exit if $SHOWCONFIG ; 
+showConfig( $conf ) && exit if $SHOWCONFIG ;
 
-# adding domains requires key validation, 
+# adding domains requires key validation,
 # and essentially everything that relates to the grid config
 # so we may as well pull the whole config, coz we won't get any
 # performance gain by bypassing this step (and we would just dupe a messy
@@ -267,12 +324,12 @@ sub addDomain {
 
     return 1 unless $validIDs ;
 
-    # we now have a list of valid keys, 
+    # we now have a list of valid keys,
     # and a list of anchors
 
     # so normalise the keys to an index based on the id, not the tag
     # so we can match the keys even if they were revoked
-    
+
     my $validKeyIDs = { map { $_->{rdata}->keyid => $_ }
             values %{ $validIDs } };
 
@@ -310,7 +367,7 @@ sub addDomain {
     logit("all configured anchors are valid for domain $domain");
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     # add the domain to be tracked to the zone
@@ -330,13 +387,13 @@ sub addDomain {
             name => $fqdn,
             text => "domain:$domain loc:$level",
             comment => $AUTOCOMM,
-            extensible_attributes => { 
+            extensible_attributes => {
                 RFC5011Level => $level,
                 RFC5011Name => $lname,
-                RFC5011Type => 'domain' 
+                RFC5011Type => 'domain'
             },
         );
-                
+
         $session->add( $tobj );
         getSessionErrors( $session , "domain $fqdn" );
     }
@@ -362,7 +419,7 @@ sub addDomain {
             lvlname => $lname,
             state => 'pending',
         };
-        
+
         if ( $anchors->{$id} ) {
 #         if ( grep ( /^$id$/ , @{ $anchorids } ) ) {
             $rec->{state} = 'valid',
@@ -392,7 +449,7 @@ sub delDomain {
     my ( $conf , $level , $lname , $domain ) = @_ ;
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     # remove the domain to be tracked
@@ -444,7 +501,7 @@ sub addKey {
     my $info = $rec->{info};
 
     # add the domain to be tracked
-    my $fqdn = join ( "." , $gid , 'key' , $domain , $lvlname , 
+    my $fqdn = join ( "." , $gid , 'key' , $domain , $lvlname ,
                             $level , $conf->{zone} );
 
     # add the tracking zone
@@ -453,22 +510,22 @@ sub addKey {
     return if $TESTKEYS ;
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     my $tobj = Infoblox::DNS::Record::TXT->new(
         name => $fqdn,
         text => "domain:$domain tag:$id loc:$level",
         comment => $AUTOCOMM,
-        extensible_attributes => { 
+        extensible_attributes => {
             RFC5011Time => time(),
             RFC5011State => $state,
             RFC5011Level => $level,
             RFC5011Name => $lvlname,
-            RFC5011Type => 'key' 
+            RFC5011Type => 'key'
         },
     );
-            
+
     $session->add( $tobj );
     getSessionErrors( $session , "key $fqdn" );
 
@@ -485,7 +542,7 @@ sub updateKey {
     return if $TESTKEYS ;
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     # add the domain to be tracked
@@ -519,7 +576,7 @@ sub updateKey {
     $tobj->extensible_attributes( $exts );
 
     $session->modify( $tobj );
-    getSessionErrors( $session ); 
+    getSessionErrors( $session );
 
     return 1 ;
 
@@ -534,7 +591,7 @@ sub removeKey {
     return if $TESTKEYS ;
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     # add the domain to be tracked
@@ -558,7 +615,7 @@ sub removeKey {
     return unless $tobj ;
 
     $session->remove( $tobj );
-    getSessionErrors( $session ); 
+    getSessionErrors( $session );
 
     return 1 ;
 
@@ -573,7 +630,7 @@ sub removeKey {
 # You can only ever publish keys that were already in the system
 # so all you should need is the config, and a ref to the record
 # the rest we can pull from the record
-# 
+#
 sub publishKey {
     my ( $conf , $level, $lname, $domain , $keyrr ) = @_ ;
 
@@ -582,7 +639,7 @@ sub publishKey {
     my $id = $keyrr->keyid();
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     logit( "Trusting key $id for $domain");
@@ -615,7 +672,7 @@ sub publishKey {
     $gobj->dnssec_trusted_keys( $gridkeys );
 
     $session->modify( $gobj );
-    getSessionErrors( $session , "publishKey : $level : $lname : $domain"); 
+    getSessionErrors( $session , "publishKey : $level : $lname : $domain");
 
     return 1 ;
 
@@ -627,12 +684,12 @@ sub publishKey {
 #
 # we can pass either a kerRR or an ID for a key,
 # Either will work
-# 
+#
 sub discoKey {
     my ( $conf , $level, $lname, $domain , $keyrr , $id ) = @_ ;
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     # this new key could be a revoked version of the key we
@@ -645,7 +702,7 @@ sub discoKey {
 
     print Dumper ( (caller(0))[3] , $keyrr ) if $DEBUG ;
 
-    # we can't use the anchors already in the config, 
+    # we can't use the anchors already in the config,
     # we may have done things in a previous loop and that altered the
     # config. So we have to refresh the data direct from the grid
 
@@ -683,13 +740,13 @@ sub discoKey {
     $gobj->dnssec_trusted_keys( $newkeys );
 
     $session->modify( $gobj );
-    getSessionErrors( $session , "discokey : $level : $lname : $domain"); 
+    getSessionErrors( $session , "discokey : $level : $lname : $domain");
 
     return 1 ;
 
 }
 
-=head2 -l 
+=head2 -l
 
 List all the domains being tracked
 
@@ -716,7 +773,7 @@ sub listDomains {
     return 1
 }
 
-=head2 -k 
+=head2 -k
 
 List all the trust anchors being tracked
 
@@ -857,7 +914,7 @@ sub queryAndIndexSigs {
 
 #
 # validate all keys in a domain.
-# 
+#
 # validation requires you to get and compare ALL the keys, so you may as
 # well do it in a batch and find a way to pass back bulk results
 #
@@ -898,7 +955,7 @@ sub validateDomainKeys {
 
     # we need at least 1 trust anchor to vaidate the keyset,
     # And we need a list of valid keys.
-    # so track 2 states : Trusted : Valid 
+    # so track 2 states : Trusted : Valid
     my $keystate = {};
     my @trustedKeySet ;
     my $faker = 1 ;   # loop hook for testing
@@ -1015,23 +1072,23 @@ sub checkAllKeys {
         return ;
     }
 
-    foreach my $level ( sort keys %{ $conf->{domains} } ) {    
-        foreach my $lname ( sort keys %{ $conf->{domains}{$level} } ) {    
+    foreach my $level ( sort keys %{ $conf->{domains} } ) {
+        foreach my $lname ( sort keys %{ $conf->{domains}{$level} } ) {
             foreach my $domain ( @{ $conf->{domains}{$level}{$lname} } ) {
                 logit( "--------------------" );
                 logit( "process keys : $level : $lname : $domain" );
 
-# Step 1 , 
+# Step 1 ,
 #    Query DNS for the current valid trust anchors and their state
 
                 # punt a domain to DNS, get back the state of all ids
-                my $validIDs = validateDomainKeys( $conf , 
+                my $validIDs = validateDomainKeys( $conf ,
                     $level, $lname ,$domain );
 
                 # if there was a DNS error, we don't return anything
                 next unless $validIDs ;
 
-# Step 2 , 
+# Step 2 ,
 #   compare all keys on the grid to all keys in DNS,
 #   and update the state of anything that changes
 
@@ -1072,32 +1129,32 @@ sub checkState {
 # the statemachine
 #
 # Add Hold down time == 30 days ( 2592000 seconds )
-# Remove Hold down time == 30 days 
+# Remove Hold down time == 30 days
 #
 # Any new 'Valid' keys can be published
 # Any new 'Revoked' keys can be discoed
 # anything else is just a flag in the database
-# 
+#
 #     The key has not or ever been seen
 # Start -> AddPend : if valid DNSKEY in RRSet with a new SEP key
-# 
+#
 #     Wait until publishing
 # AddPend -> Start : if key in not in valid DNSKEY RRSet
 #         -> Valid : if key is in a valid RRSet after the 'add time'
 #                    and it is still valid in the rrset
-# 
+#
 #     You can publish this key
 # Valid -> Missing : if key in not in valid DNSKEY RRSet
 #       -> Revoked : if key has "REVOKED" bit set
-# 
+#
 #     The key went missing without being revoked (abnormal state)
 #     Continue to publish this key
 # Missing -> Valid : if key is in valid DNSKEY RRSet
-#         -> Revoked : if key has "REVOKED" bit set 
-# 
+#         -> Revoked : if key has "REVOKED" bit set
+#
 #     DO NOT publish this key
 # Revoked -> Removed : if revoked key is not in RRSet for 30 days
-# 
+#
 #     DO NOT publish this key, and never re-publish this key
 #     remove it from the database 30 days after it was 'removed'
 #   Removed -> /dev/null
@@ -1134,7 +1191,7 @@ sub checkState {
     # a keytag could have changed if it was revoked, so we have to
     # create a new index of the Queried keys based on their 'keyid'
 
-    my $validKeyIDs = { map { $_->{rdata}->keyid => $_ } 
+    my $validKeyIDs = { map { $_->{rdata}->keyid => $_ }
             values %{ $args->{keys} } };
 
     # $validKeyIDs is now a HASHREF with the state for each GRIDID
@@ -1351,7 +1408,7 @@ sub checkState {
     # - adds it as pending... and kicks an error, prob ok
 
     foreach my $id ( sort {$a <=> $b} keys %{ $validKeyIDs } ) {
-    
+
         # send it to the pending queue
         # [ ] :
         logit( "newkey : $id : start -> pending");
@@ -1366,9 +1423,9 @@ sub checkState {
             gid => $id,
             state => 'pending',
         };
-        
+
         addKey( $conf , $rec );
-        
+
     }
 
 }
@@ -1376,9 +1433,9 @@ sub checkState {
 ##################################################
 #
 # configuration handlers
-# 
+#
 
-=head2 -m <grid.nameserver>
+=head2 -ns <grid.nameserver>
 
 Set the grid member to be used for DNS queries.
 
@@ -1395,7 +1452,7 @@ queries for the domains being managed by this utility.
 sub setMemberNS {
     my ( $conf , $member ) = @_ ;
 
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return 1 unless $session ;
 
     # search for all grid member objects
@@ -1439,14 +1496,14 @@ sub setMemberNS {
             foreach my $cobj ( @cleanmembers ) {
                 setAttributes( $cobj , { RFC5011Type => '' } );
                 $session->modify( $cobj );
-                getSessionErrors( $session ); 
+                getSessionErrors( $session );
             }
         }
 
         # then (re) set this member
         setAttributes( $newobj , { RFC5011Type => 'nameserver' } );
         $session->modify( $newobj );
-        getSessionErrors( $session ); 
+        getSessionErrors( $session );
     }
     else {
         logerror( "no member found by name : $member" );
@@ -1526,13 +1583,13 @@ sub setUser {
     return 1 ;
 }
 
-=head2 -c 
+=head2 -c
 
 Show just the local configuration settings ( grid master, username , etc )
 
 =cut
 
-=head2 -C 
+=head2 -C
 
 Show the complete configuration settings, including all tracked domains
 and keys
@@ -1577,7 +1634,7 @@ and extensible_attributes FORCE
 The init process will :
 
  - create any required extensible_attributes
- - create the zone 'rfc5011.Infoblox.local' 
+ - create the zone 'rfc5011.Infoblox.local'
  - set up any other required configuration
 
 =cut
@@ -1615,11 +1672,11 @@ sub initConfig {
     logit( "Saving loginfo to disk");
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     # Create some EAs
-    foreach my $ea ( qw( 
+    foreach my $ea ( qw(
                 RFC5011Type
                 RFC5011Time
                 RFC5011State
@@ -1632,7 +1689,7 @@ sub initConfig {
             type => "string",
         );
         $session->add( $dobj );
-        getSessionErrors( $session ); 
+        getSessionErrors( $session );
 
     }
 
@@ -1661,7 +1718,7 @@ sub loadGridConf {
     # and we track any errors in the config, in case something got messed up
     my $conferrors ;
 
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     # search for all grid member objects to find the namserver to use
@@ -1847,7 +1904,7 @@ sub getDomains {
     my $domaindata ;
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     my ( @domains ) = $session->search(
@@ -1891,7 +1948,7 @@ sub getKeys {
     # called from loadGridConf
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     my ( @keys ) = $session->search(
@@ -1911,7 +1968,7 @@ sub getKeys {
 
         my $parent = "$loc.$level.$conf->{zone}";
 
-        my ( $id , $domain ) = $kobj->name() 
+        my ( $id , $domain ) = $kobj->name()
             =~ /(\d+).key.(\S+).$parent/;
 
         # perhaps a platter hierarchy, with a single namespced key?
@@ -1945,14 +2002,14 @@ sub getAnchors {
     # called from loadGridConf()
 
     # now try and connect to the grid and make some other settings
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     # We're ok, continue to configure the grid
     my ( $gobj ) = $session->get(
         object => "Infoblox::Grid::DNS",
     );
-    getSessionErrors( $session ,"getAnchors : Infoblox::Grid::DNS"); 
+    getSessionErrors( $session ,"getAnchors : Infoblox::Grid::DNS");
 
     # no grid properties is bad
     return undef unless $gobj ;
@@ -2016,11 +2073,11 @@ sub getDNSSettings {
         );
     }
 
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     my ( $obj ) = $session->get( %query );
-    getSessionErrors( $session ,"getDNSSettings : $level : $name"); 
+    getSessionErrors( $session ,"getDNSSettings : $level : $name");
     return $obj ;
 
 }
@@ -2069,7 +2126,7 @@ sub restartServices {
         return ;
     }
 
-    my $session = startSession( $conf );  
+    my $session = startSession( $conf );
     return unless $session ;
 
     logit("Requesting DNS service restart");
@@ -2116,7 +2173,7 @@ sub startSession {
     $conf->{session} = $session ;
 
     return $session ;
-            
+
 }
 
 #
@@ -2190,7 +2247,7 @@ sub setAttributes {
 }
 
 #
-# PAPI 
+# PAPI
 # lookup algorithm, coz we don't support all numbers, grr
 #
 
@@ -2293,7 +2350,7 @@ per line, you may hate me for that.
 
 
 
-=head1 BUGS 
+=head1 BUGS
 
 No bugs have been reported. Yet.
 
@@ -2316,7 +2373,7 @@ sub setFakeKeys {
     # usually we can just modify one of the keys
     my ( $tag ) = sort {$a<=>$b} keys %{ $keydata } ;
 
-    
+
     # the 'invalid' test is in the validateDomainKeys()
     if ( $state =~ /invalid/i ) {
         return ;
@@ -2460,4 +2517,3 @@ sub keyid {
     }
 
 }
-

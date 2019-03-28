@@ -1,303 +1,333 @@
-=head1 NAME
+CAPSTAN(1)            User Contributed Perl Documentation           CAPSTAN(1)
 
-capstan : an implementation of RFC 5011 for Infoblox
 
-=head1 SYNOPSIS
 
-  ./capstan.pl
+NNAAMMEE
+       capstan : an implementation of RFC 5011 for Infoblox
 
-  ./capstan.pl --init --gm my.grid.master --user admin
+SSYYNNOOPPSSIISS
+         ./capstan.pl
 
-  ./capstan.pl -a org 
-  ./capstan.pl -a org -v internal
-  ./capstan.pl -a org -m ns1.myco.com
+         ./capstan.pl --init --gm my.grid.master --user admin
 
- Options:
+         ./capstan.pl -a org
+         ./capstan.pl -a org -v internal
+         ./capstan.pl -a org -m ns1.myco.com
 
-  -a <domain>   Add a domain to track
-  -r <domain>   Remove a domain to track
-  -l            List tracked domains
-  -k            List tracked keys
+        Options:
 
-  -help      Show a brief help message
-  -C         Show the current configuration
-  -c         Show just the local configuration
-  --init     Initialise the system (only runs once)
-             requires --gm and --user
+         -a <domain>   Add a domain to track
+         -r <domain>   Remove a domain to track
+         -v <view>     Add/Remove a domain from this view
+         -m <member>   Add/Remove a domain from this member
+         -l            List tracked domains
+         -k            List tracked keys
 
-  -ns <name>  Set the query nameserver to this member
-  --user     Set the username (and password) for login
+         -ns <name>    Set the query nameserver to this member
 
-=head1 DESCRIPTION
+         -help      Show a brief help message
+         -C         Show the current configuration
+         -c         Show just the local configuration
 
-=for author to fill in:
-    Write a full description of the module and its features here.
-    Use subsections (=head2, =head3) as appropriate.
+         --init         Initialise the system (only runs once)
+                        requires --gm and --user
+           --gm <name>  Set the Grid Master
+           --user       Set the username (and password) for login
 
+DDEESSCCRRIIPPTTIIOONN
+   PPrreerreeqquuiissiitteess
+       Capstan tries to use as few deps as possible, but it was unavoadable.
+       you're going to need:
 
-=cut
+        * Storable
+        * Term::ReadKey
+        * Digest::md5
+        * Net::DNS (and DNSSec extensions)
+        * Infobox.pm (until this gets ported to the REST API)
 
-=head1 OPTIONS
+       You're also going to need DNS query access to the outside world, as
+       this script needs to pull the keys from signed zones and trust anchor
+       points.
 
-=head2 -a <domain>
+   QQuuiicckkssttaarrtt
+       Capstan is a scheduled script that will manage and update the trust
+       anchors for DNSSec zones. It does thus by tracking state with a custom
+       zone on the infoblox grid (rfc5011.local) and adding EAs on both these
+       records, the zone, and the trust anchors themselves.
 
-Add a domain to the tracker, primed by an initial trust anchor(s)
+       It is designed to be robust enouth to handle admins making changes
+       directly on the grid, outside this script.
 
-This will look in the existing trust anchor in the Grid, View or Member
-DNS properties, and, if it finds one, use this to prime a lookup for the
-published trust anchors for that domain.
+       Almost all the configuration is stored on the grid, which should help
+       with disaster recovery.
 
-All the published keys will then be tracked for that domain.
+       _I_n_i_t_i_a_l_i_s_e _t_h_e _s_y_s_t_e_m_.
 
-You only need a single key to be added to the DNS settings to prime the
-domain
+       You need to bootstrap the management zone and create a local config
+       file:
 
-This will create a TXT record(s) in the rfc5011.local zone for the namespace
-of the tracked domain
+        ./capstan.pl --init --gm my.grid.master --user admin
 
+       _D_e_f_i_n_e _a _r_e_s_o_l_v_e_r _m_e_m_b_e_r
 
-=cut
+       You need to use a grid member to make your DNS queries to the outside
+       world, This ensures that the grid (in theory) has the same view of the
+       trust anchors as this script. So you need to set that up (once) in the
+       config.
 
-=head2 -r <domain>
+        ./capstan.pl -ns my.grid.nameserver
 
-Remove a domain to the tracker
+       Obviously, this member needs to be able to resolve to the internet
 
-This will remove the matching TXT record in the rfc5011.local zone for
-the namespace of the tracked domain
+       _M_a_n_u_a_l_l_y _a_d_d _s_o_m_e _t_r_u_s_t _a_n_c_h_o_r_s
 
+       You must prime the system by adding an initial trust anchor for
+       whatever zones you want to track. this is a bacic securlty measure and
+       the system will error out if it can't find a matching anchor.
 
-=cut
+       You do this through the Infoblox Grid GUI.
 
-=head2 -l 
+       _A_d_d _s_o_m_e _z_o_n_e_s _t_o _m_a_n_a_g_e
 
-List all the domains being tracked
+       Then you need to add some trust anchor points, and decide if you want
+       to track them on a grid, view or member level (you can add trust
+       anchors at any of these points)
 
-This will get all the TXT records in the rfc5011.local zone where the
-extensible_attribute 'RFC5011Type' == 'domain'
+       Example: Add '.org' at the grid level for tracking
 
+         ./capstan.pl -a org
 
-=cut
+       Example: Add '.org' at the view level for tracking
+         ./capstan.pl -a org -v internal
 
-=head2 -k 
+       Example: Add '.org' at the member level for tracking
+         ./capstan.pl -a org -m ns1.myco.com
 
-List all the trust anchors being tracked
+       _U_p_d_a_t_e _y_o_u_r _a_n_c_h_o_r_s_, _a_s _r_e_q_u_i_r_e_d
 
-This will get all the TXT records in the rfc5011.local zone where the
-extensible_attribute 'RFC5011Type' == 'key' and show what domain and area
-of the grid they relate to
+       Now you can just run the script periodically to keep stuff in sync
 
+        ./capstan.pl
 
-=cut
+OOPPTTIIOONNSS
+   --aa <<ddoommaaiinn>>
+       Add a domain to the tracker, primed by an initial trust anchor(s)
 
-=head2 -m <grid.nameserver>
+       This will look in the existing trust anchor in the Grid, View or Member
+       DNS properties, and, if it finds one, use this to prime a lookup for
+       the published trust anchors for that domain.
 
-Set the grid member to be used for DNS queries.
+       All the published keys will then be tracked for that domain.
 
-Thus must be a grid member, and needs to be able to make recursive
-queries for the domains being managed by this utility.
+       You only need a single key to be added to the DNS settings to prime the
+       domain
 
+       This will create a TXT record(s) in the rfc5011.local zone for the
+       namespace of the tracked domain
 
-=cut
+   --rr <<ddoommaaiinn>>
+       Remove a domain to the tracker
 
-=head2 --gm <grid.master>
+       This will remove the matching TXT record in the rfc5011.local zone for
+       the namespace of the tracked domain
 
-Set or change the GM address/name that the system manages.
+   --ll
+       List all the domains being tracked
 
-This is usually done as part of the '--init' process, but may nttd to be
-updated as part of a grid re-configuration (E.g DR)
+       This will get all the TXT records in the rfc5011.local zone where the
+       extensible_attribute 'RFC5011Type' == 'domain'
 
+   --kk
+       List all the trust anchors being tracked
 
-=cut
+       This will get all the TXT records in the rfc5011.local zone where the
+       extensible_attribute 'RFC5011Type' == 'key' and show what domain and
+       area of the grid they relate to
 
-=head2 --user <username>
+   --nnss <<ggrriidd..nnaammeesseerrvveerr>>
+       Set the grid member to be used for DNS queries.
 
-Set or change the username (and password) configured to make API calls to
-the grid.
+       Thus must be a grid member, and needs to be able to make recursive
+       queries for the domains being managed by this utility.
 
-You will be prompted to enter the password
+   ----ggmm <<ggrriidd..mmaasstteerr>>
+       Set or change the GM address/name that the system manages.
 
+       This is usually done as part of the '--init' process, but may nttd to
+       be updated as part of a grid re-configuration (E.g DR)
 
-=cut
+   ----uusseerr <<uusseerrnnaammee>>
+       Set or change the username (and password) configured to make API calls
+       to the grid.
 
-=head2 -c 
+       You will be prompted to enter the password
 
-Show just the local configuration settings ( grid master, username , etc )
+   --cc
+       Show just the local configuration settings ( grid master, username ,
+       etc )
 
+   --CC
+       Show the complete configuration settings, including all tracked domains
+       and keys
 
-=cut
+   ----iinniitt
+       Initialise the system and configure all required settings.  You should
+       only ever need to do this once
 
-=head2 -C 
+         ./capstan.pl --init --gm my.grid.master --user admin
 
-Show the complete configuration settings, including all tracked domains
-and keys
+       This requires you to specify the grid master, and you will be prompted
+       for a password for the user account. The use must be enabled for API
+       access and be able to modify DNS zones, records, Grid DNS settings,
+       Grid memners and extensible_attributes FORCE
 
+       The init process will :
 
-=cut
+        - create any required extensible_attributes
+        - create the zone 'rfc5011.Infoblox.local'
+        - set up any other required configuration
 
-=head2 --init
+DDAATTAA SSTTOORRAAGGEE
+       The IETF has a number of drafts (and RFCs) relating to the storage and
+       management of trust anchors, while at the same time acknowleging the
+       conflicts that may occur when applying these rules to RFC5011.
 
-Initialise the system and configure all required settings.
-You should only ever need to do this once
+       This is further compounded by the way trust anchors are stored on the
+       infoblox grid, and that RFC5011 requires you to track DNSKEYS that are
+       not in the published RRSET for a domain.
 
-  ./capstan.pl --init --gm my.grid.master --user admin
+       This utility follows the basic principle of all those recomendations in
+       that the management system should not rely on the keys in its database
+       but merely use them to prime queries for records in the DNS.
 
-This requires you to specify the grid master, and you will be prompted for
-a password for the user account. The use must be enabled for API access
-and be able to modify DNS zones, records, Grid DNS settings, Grid memners
-and extensible_attributes FORCE
+       It should also be noted tht while DNSKEY RRs and RRSIG rrs can be
+       related via the 'keytag', this tag will change if a key is revoked, so
+       that method can't be used to track a key through it's lifecycle. The DS
+       signature can't be used for simliar reasons. (see the section on
+       'KEYTAGS')
 
-The init process will :
+       As such, the system uses the following components to track a trust
+       anchor through its life cycle:
 
- - create any required extensible_attributes
- - create the zone 'rfc5011.Infoblox.local' 
- - set up any other required configuration
+       Untracked trust anchors
+           Untracked Trust anchors are added manually to the Grid,view, or
+           member DNSSEC settings. This is how you bootstrap a domain
 
+       Valid trust anchors
+           Valid trust anchors are automatically added and removed to the
+           Grid,view, or member DNSSEC settings
 
-=cut
+           The algorithm field in the Infoblox settings uses a different
+           format to the one described in any of the RFCs or in the
+           Net::DNS::Sec libraries. A lookup table is used to convert between
+           the formats
 
-=head1 DATA STORAGE
+       rfc5011.infoblox.local zone
+           The utility tracks all other configuration in the disabled dns zone
+           'rfc5011.infoblox.local'. This zone shoud only ever contain TXT
+           records.  And modifying it by hand will obviously cause some issues
 
-The IETF has a number of drafts (and RFCs) relating to the storage and
-management of trust anchors, while at the same time acknowleging the
-conflicts that may occur when applying these rules to RFC5011.
+       Tracked domains
+           Tracked domains are added as TXT records to the
+           'rfc5011.infoblox.local' zone. The records are added in the form
 
-This is further compounded by the way Trust anchors are stored on the
-infoblox grid, and that RFC5011 requires you to track DNSKEYS
-that are not in the published RRSET for a domain.
+               DOMAIN.NAME.LEVEL.rfc5011.infoblox.local
 
-This utility follows the basic principle of all those recomendations in
-that the management system should not rely on the keys in its database but
-merely use them to prime queries for records in the DNS.
+           e.g:
 
-It should also be noted tht while DNSKEY RRs and RRSIG rrs can be related
-via the 'keytag', this tag will change if a key is revoked, so that method
-can't be used to track a key through it's lifecycle. The DS signature
-can't be used for simliar reasons.
+               org.default.grid.rfc5011.infoblox.local IN TXT
+               org.ns1.company.member.rfc5011.infoblox.local IN TXT
+               org.internal.view.rfc5011.infoblox.local IN TXT
 
-As such, the system uses the following components to track a trust
-anchor through its life cycle:
+       Tracked keys
+           Tracked keys are added as TXT records to the
+           'rfc5011.infoblox.local' zone. The records are added in the form
 
-=over
+               GRIDID.key.DOMAIN.NAME.LEVEL.rfc5011.infoblox.local
 
-=item Untracked trust anchors
+           The state and timers and other information are stored in
+           extensible_attributes on the record.
 
-Untracked Trust anchors are added manually to the Grid,view, or member
-DNSSEC settings. This is how you bootstrap a domain
+           e.g:
 
-=item Valid trust anchors
+               9795.key.org.default.grid.rfc5011.infoblox.local IN TXT
+               21366.key.org.ns1.company.member.rfc5011.infoblox.local IN TXT
+               9795.key.org.internal.view.rfc5011.infoblox.local IN TXT
 
-Valid trust anchors are automatically added and removed to the Grid,view,
-or member DNSSEC settings
+           The GRIDID is not the keytag for the record, as this could change
+           if a key is revoked or similar. Instead it is a variation of the
+           keytag that ignores any flags that are set on the RR.  As such, the
+           DNSKEY keytag can't be directly used to match a queried RR to one
+           in the config.  ( see the section on KEYTAGS )
 
-The algorithm field in the Infoblox settings uses a different format to
-the one described in any of the RFCs or in the Net::DNS::Sec libraries. A
-lookup table is used to convert between the formats
+           The KEY is not stored on the record, just the ID that is then used
+           to find a matching record from a valid current DNS query.
 
-=item rfc5011.infoblox.local zone
+KKEEYYTTAAGGSS
+       Why do I see 2 different keytags or ids for a DNSKEY ?
 
-The utility tracks all other configuration in the disabled dns zone
-'rfc5011.infoblox.local'. This zone shoud only ever contain TXT records.
-And modifying it by hand will obviously cause some issues
+       The keytag algorithm is calculated from both the key and the flags in
+       the DNSKEY record.  While this tag can be used to match a key to it's
+       signature, if you REVOKE a key you change the flags, and thus the tag.
+       So it is no longer possible to use the tag to compare a revoked key to
+       its unrevoked version.
 
-=item Tracked domains
+       This tool calculates a new, different, tag that ignores all the flags
+       and just calculates the value from the key itself.  The logging reports
+       both tags so you can compare resulds from DNS queries to results
+       calculated internally by this tool.
 
-Tracked domains are added as TXT records to the 'rfc5011.infoblox.local'
-zone. The records are added in the form
+       The algorithm used is a variation of the one defined in RFC4034
+       Appendix B, with the 'flags','protocol' and 'algorithm' are all set to
+       0.
 
-    DOMAIN.NAME.LEVEL.rfc5011.infoblox.local
+DDIIAAGGNNOOSSTTIICCSS
+       Use '-d N' to run at different diagnostic/debug levels
 
-e.g:
+       The higher the number, the more feedback you get
 
-    org.default.grid.rfc5011.infoblox.local IN TXT
-    org.ns1.company.member.rfc5011.infoblox.local IN TXT
-    org.internal.view.rfc5011.infoblox.local IN TXT
+   MMeessssaaggeess
+       Messages are logged with either an 'INFO' , 'WARN' or 'ERROR' header:
 
-=item Tracked keys
+       "ERROR : The record '8763.key....' already exists"
+           You are trying to add or track a domain that is already in the
+           tracking system.  This is mostly benign, but the state of that key
+           will be incorrect until the system runs again and re-validates all
+           the keys.
 
-Tracked keys are added as TXT records to the 'rfc5011.infoblox.local'
-zone. The records are added in the form
+           [Description of error here]
 
-    GRIDID.key.DOMAIN.NAME.LEVEL.rfc5011.infoblox.local
+       "Another error message here"
+           [Description of error here]
 
-The state and timers and other information are stored in
-extensible_attributes on the record.
+           [Et cetera, et cetera]
 
-e.g:
+DDEEPPEENNDDEENNCCIIEESS
+        Storable
+        Net::DNS, Net::DNS::Sec
+        Infoblox.pm
+        Digest::MD5
 
-    9795.key.org.default.grid.rfc5011.infoblox.local IN TXT
-    21366.key.org.ns1.company.member.rfc5011.infoblox.local IN TXT
-    9795.key.org.internal.view.rfc5011.infoblox.local IN TXT
+IINNCCOOMMPPAATTIIBBIILLIITTIIEESS
+       Not all algorithms are supported, as a manual lookup table is required
+       to convert beteen public and Infoblox supported algorithms
 
-The GRIDID is not the keytag for the record, as this could change if a
-key is revoked or similar. Instead it is a variation of the keytag that
-ignores any flags that are set on the RR. As such it can't be directly
-used to match a queried RR to one in the config. Instead you must
-calculate the 'gridid' for the RR and match against that.
+       Unicode may be a problem, dependong on the domain name being added as
+       SEP.
 
-The algorithm used is a variation of the one defined in RFC4034 Appendix
-B, with the 'flags','protocol' and 'algorithm' are all set to 0.
+       I have not yet thought through other incompatibilities, though there
+       are most certainly some. I don't like code that is longer than 72
+       characters per line, you may hate me for that.
 
-The KEY is not stored on the record, just the ID that is then used to
-find a matching record from a valid current DNS query.
+BBUUGGSS
+       No bugs have been reported. Yet.
 
-=back
+SSEEEE AALLSSOO
+           perldoc, perlfunc
 
+AAUUTTHHOORR
+       Copyright (c) 2015, Geoff Horne, SLC . All rights reserved.
 
-=cut
 
-=head1 DIAGNOSTICS
 
-Use '-d N' to run at different diagnostic/debug levels
-
-The higher the number, the more feedback you get
-
-=over
-
-=item C<< Error message here, perhaps with %s placeholders >>
-
-[Description of error here]
-
-=item C<< Another error message here >>
-
-[Description of error here]
-
-[Et cetera, et cetera]
-
-=back
-
-=head1 DEPENDENCIES
-
- Storable
- Net::DNS, Net::DNS::Sec
- Infoblox.pm
- Digest::MD5
-
-=head1 INCOMPATIBILITIES
-
-Not all algorithms are supported, as a manual lookup table is required to
-convert beteen public and Infoblox supported algorithms
-
-Unicode may be a problem, dependong on the domain name being added as
-SEP.
-
-I have not yet thought through other incompatibilities, though there are
-most certainly some. I don't like code that is longer than 72 characters
-per line, you may hate me for that.
-
-
-
-=head1 BUGS 
-
-No bugs have been reported. Yet.
-
-=head1 SEE ALSO
-
-    perldoc, perlfunc
-
-=head1 AUTHOR
-
-Copyright (c) 2015, Geoff Horne, SLC . All rights reserved.
-
-
-=cut
-
+perl v5.18.2                      2019-03-28                        CAPSTAN(1)
